@@ -1,0 +1,96 @@
+# C++ related
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.ipdb
+*.iobj
+
+# Godot related
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+*.translation
+*.import
+*.gen.*
+
+# Build directories
+build/
+bin/
+lib/
+dist/
+install/
+
+# CMake related
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE related
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# USD related
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.usdnc
+*.usdt
+*.usdtree
+*.usdview
+
+# Generated documentation
+docs/doxygen/
+
+# Dependency directories
+deps/
+third_party/build/
+external/build/
+
+# Python related (for USD scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
