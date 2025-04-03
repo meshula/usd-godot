@@ -1,0 +1,25 @@
+[configuration]
+
+entry_symbol = "godot_usd_init"
+compatibility_minimum = "4.1"
+
+[libraries]
+
+macos.debug = "res://lib/libgodot-usd.dylib"
+macos.release = "res://lib/libgodot-usd.dylib"
+windows.debug.x86_64 = "res://lib/godot-usd.dll"
+windows.release.x86_64 = "res://lib/godot-usd.dll"
+linux.debug.x86_64 = "res://lib/libgodot-usd.so"
+linux.release.x86_64 = "res://lib/libgodot-usd.so"
+android.debug.arm64 = "res://lib/android/arm64/libgodot-usd.so"
+android.release.arm64 = "res://lib/android/arm64/libgodot-usd.so"
+ios.debug = "res://lib/ios/libgodot-usd.dylib"
+ios.release = "res://lib/ios/libgodot-usd.dylib"
+
+[dependencies]
+
+macos = {}
+windows = {}
+linux = {}
+android = {}
+ios = {}
