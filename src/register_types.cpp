@@ -1,5 +1,8 @@
 #include "register_types.h"
 #include "usd_plugin.h"
+#include "usd_document.h"
+#include "usd_export_settings.h"
+#include "usd_state.h"
 
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -10,6 +13,9 @@ using namespace godot;
 void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
         // Register non-editor classes here
+        ClassDB::register_class<UsdDocument>();
+        ClassDB::register_class<UsdExportSettings>();
+        ClassDB::register_class<UsdState>();
     } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
         // Register editor plugin classes
         ClassDB::register_class<USDPlugin>();
@@ -25,6 +31,8 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
 void uninitialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
         // Unregister non-editor classes here
+        // Note: We don't need to explicitly unregister classes, as they are automatically
+        // unregistered when the module is unloaded. This is just for completeness.
     } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
         // Unregister the singleton
         Engine::get_singleton()->unregister_singleton("USDPlugin");

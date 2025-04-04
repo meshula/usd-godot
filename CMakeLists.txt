@@ -77,49 +77,64 @@ set(SOURCES
     src/register_types.h
     src/usd_plugin.cpp
     src/usd_plugin.h
+    src/usd_document.cpp
+    src/usd_document.h
+    src/usd_export_settings.cpp
+    src/usd_export_settings.h
+    src/usd_state.cpp
+    src/usd_state.h
 )
 
 # Create the shared library
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
-# Include directories
+# Set CMAKE_PREFIX_PATH to include the USD dependencies
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/build-usd/deps/install")
+
+# Find required packages for USD
+find_package(TBB REQUIRED)
+find_package(OpenGL REQUIRED)
+find_package(OpenSubdiv REQUIRED)
+
+# Include the USD cmake targets
+include(${USD_INSTALL_DIR}/cmake/pxrTargets.cmake)
+
+# Include directories for godot-cpp
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${GODOT_CPP_SOURCE_DIR}/include
     ${GODOT_CPP_SOURCE_DIR}/gen/include
-    ${USD_INSTALL_DIR}/include
 )
 
 # Link against godot-cpp, godot_extension_interface, and USD
 target_link_directories(${PROJECT_NAME} PRIVATE
     ${GODOT_CPP_BINARY_DIR}/bin
-    ${USD_INSTALL_DIR}/lib
 )
 
 if(USD_STATIC_LIBS)
-    # Link against individual USD libraries instead of the monolithic library
+    # Link against individual USD libraries using the pxr targets
     target_link_libraries(${PROJECT_NAME} PRIVATE 
         godot-cpp 
         godot_extension_interface
-        usd_usd
-        usd_usdGeom
-        usd_usdImaging
-        usd_usdImagingGL
-        usd_hd
-        usd_hdSt
-        usd_hdx
-        usd_gf
-        usd_sdf
-        usd_tf
-        usd_vt
-        usd_ar
-        usd_kind
-        usd_pcp
-        usd_plug
-        usd_work
-        usd_usdShade
-        usd_usdLux
-        usd_usdSkel
-        usd_usdUtils
+        usd
+        usdGeom
+        usdImaging
+        usdImagingGL
+        hd
+        hdSt
+        hdx
+        gf
+        sdf
+        tf
+        vt
+        ar
+        kind
+        pcp
+        plug
+        work
+        usdShade
+        usdLux
+        usdSkel
+        usdUtils
     )
 else()
     target_link_libraries(${PROJECT_NAME} PRIVATE godot-cpp godot_extension_interface usd)
