@@ -19,6 +19,7 @@ UsdState::UsdState() {
     // Set default values
     _copyright = "";
     _bake_fps = 30.0f;
+    _stage = nullptr;
 }
 
 void UsdState::set_copyright(const String &p_copyright) {
@@ -35,6 +36,14 @@ void UsdState::set_bake_fps(float p_fps) {
 
 float UsdState::get_bake_fps() const {
     return _bake_fps;
+}
+
+void UsdState::set_stage(UsdStageRefPtr p_stage) {
+    _stage = p_stage;
+}
+
+UsdStageRefPtr UsdState::get_stage() const {
+    return _stage;
 }
 
 }

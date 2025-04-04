@@ -4,6 +4,11 @@
 #include <godot_cpp/classes/resource.hpp>
 #include <godot_cpp/variant/string.hpp>
 
+// USD headers
+#include <pxr/usd/usd/stage.h>
+
+PXR_NAMESPACE_USING_DIRECTIVE
+
 namespace godot {
 
 class UsdState : public Resource {
@@ -15,7 +20,7 @@ private:
     float _bake_fps;
     
     // USD-specific state
-    // These will depend on the USD API and will be expanded as we implement the USD integration
+    UsdStageRefPtr _stage;
 
 protected:
     static void _bind_methods();
@@ -29,6 +34,10 @@ public:
     
     void set_bake_fps(float p_fps);
     float get_bake_fps() const;
+    
+    // Stage management
+    void set_stage(UsdStageRefPtr p_stage);
+    UsdStageRefPtr get_stage() const;
 };
 
 }
