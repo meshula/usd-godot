@@ -16,12 +16,16 @@
 #include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
+#include <godot_cpp/classes/material.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/base/vt/array.h>
+#include <pxr/base/gf/vec3f.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -518,6 +522,51 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
         
         // Apply the mesh to the instance
         mesh_instance->set_mesh(box_mesh);
+        
+        // Check for displayColor attribute
+        UsdPrim usdPrim(p_prim);
+        if (usdPrim.HasAttribute(TfToken("primvars:displayColor"))) {
+            // Get the display color
+            UsdAttribute displayColorAttr = usdPrim.GetAttribute(TfToken("primvars:displayColor"));
+            VtArray<GfVec3f> displayColors;
+            if (displayColorAttr.Get(&displayColors) && !displayColors.empty()) {
+                // Check for colorSpace metadata
+                std::string colorSpace = "srgb";
+                // In the example, colorSpace is a metadata on the displayColor attribute
+                TfToken colorSpaceToken("colorSpace");
+                if (displayColorAttr.HasMetadata(colorSpaceToken)) {
+                    std::string colorSpaceValue;
+                    displayColorAttr.GetMetadata(colorSpaceToken, &colorSpaceValue);
+                    colorSpace = colorSpaceValue;
+                    UtilityFunctions::print("USD Import: Found color space for cube: ", prim_name, 
+                        " colorSpace: ", String(colorSpace.c_str()));
+                }
+                // Create a simple material
+                Ref<Material> material;
+                material.instantiate();
+                
+                // Set the albedo color from the displayColor
+                GfVec3f color = displayColors[0];
+                
+                // Log the color values
+                UtilityFunctions::print("USD Import: Found display color for cube: ", prim_name, 
+                    " RGB: (", color[0], ", ", color[1], ", ", color[2], ")");
+                
+                // Create a StandardMaterial3D
+                Ref<StandardMaterial3D> stdMaterial;
+                stdMaterial.instantiate();
+                
+                // Set the albedo color from the displayColor
+                Color godotColor(color[0], color[1], color[2]);
+                stdMaterial->set_albedo(godotColor);
+                
+                // Apply the material to the mesh
+                mesh_instance->set_surface_override_material(0, stdMaterial);
+                
+                UtilityFunctions::print("USD Import: Successfully applied display color to cube: ", prim_name, 
+                    " RGB: (", color[0], ", ", color[1], ", ", color[2], ")");
+            }
+        }
         
         // Apply transform from USD prim
         _apply_transform_from_usd_prim(p_prim, mesh_instance);
