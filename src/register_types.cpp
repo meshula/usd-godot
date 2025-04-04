@@ -8,19 +8,30 @@ using namespace godot;
 
 // Register plugin classes
 void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
-    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-        return;
+    if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        // Register non-editor classes here
+    } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+        // Register editor plugin classes
+        ClassDB::register_class<USDPlugin>();
+        
+        // Register the plugin with the editor
+        EditorPlugins::add_by_type<USDPlugin>();
+        
+        // Register the plugin as a singleton
+        Engine::get_singleton()->register_singleton("USDPlugin", memnew(USDPlugin));
     }
-    
-    ClassDB::register_class<USDPlugin>();
 }
 
 void uninitialize_godot_usd_module(ModuleInitializationLevel p_level) {
-    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-        return;
+    if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        // Unregister non-editor classes here
+    } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+        // Unregister the singleton
+        Engine::get_singleton()->unregister_singleton("USDPlugin");
+        
+        // Unregister editor plugin classes
+        EditorPlugins::remove_by_type<USDPlugin>();
     }
-    
-    // Nothing to do here for now
 }
 
 // GDExtension initialization

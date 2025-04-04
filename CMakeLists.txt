@@ -22,17 +22,26 @@ if(NOT DEFINED GODOT_SOURCE_DIR)
     message(FATAL_ERROR "GODOT_SOURCE_DIR must be defined. Set it to the path where Godot engine source code is located.")
 endif()
 
-# Include FetchContent module
-include(FetchContent)
+# Include ExternalProject module
+include(ExternalProject)
 
-# Fetch godot-cpp
-FetchContent_Declare(
-    godot_cpp
-    GIT_REPOSITORY https://github.com/godotengine/godot-cpp.git
-    GIT_TAG 4.2
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(godot_cpp)
+# Set godot-cpp directories
+set(GODOT_CPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
+set(GODOT_CPP_BINARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
+set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.macos.template_release.universal.a")
+
+# Check if godot-cpp is already cloned
+if(NOT EXISTS "${GODOT_CPP_SOURCE_DIR}")
+    # Clone godot-cpp repository
+    message(STATUS "Cloning godot-cpp repository...")
+    execute_process(
+        COMMAND git clone --depth 1 --branch 4.2 https://github.com/godotengine/godot-cpp.git ${GODOT_CPP_SOURCE_DIR}
+        RESULT_VARIABLE GIT_RESULT
+    )
+    if(NOT GIT_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to clone godot-cpp repository")
+    endif()
+endif()
 
 # Create an interface library for Godot extension interface
 add_library(godot_extension_interface INTERFACE)
@@ -40,16 +49,27 @@ target_include_directories(godot_extension_interface INTERFACE
     ${GODOT_SOURCE_DIR}/core/extension
 )
 
-# Build godot-cpp using SCons
-message(STATUS "Building godot-cpp...")
-execute_process(
-    COMMAND scons target=template_release generate_bindings=yes
-    WORKING_DIRECTORY ${godot_cpp_SOURCE_DIR}
-    RESULT_VARIABLE SCONS_RESULT
-)
-if(NOT SCONS_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to build godot-cpp")
+# Check if godot-cpp is already built
+if(NOT EXISTS "${GODOT_CPP_LIB}")
+    # Build godot-cpp using SCons
+    message(STATUS "Building godot-cpp...")
+    execute_process(
+        COMMAND scons target=template_release generate_bindings=yes
+        WORKING_DIRECTORY ${GODOT_CPP_SOURCE_DIR}
+        RESULT_VARIABLE SCONS_RESULT
+    )
+    if(NOT SCONS_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to build godot-cpp")
+    endif()
+else()
+    message(STATUS "godot-cpp already built, skipping build step")
 endif()
+
+# Create an imported library for godot-cpp
+add_library(godot-cpp STATIC IMPORTED)
+set_target_properties(godot-cpp PROPERTIES
+    IMPORTED_LOCATION "${GODOT_CPP_LIB}"
+)
 
 # Source files
 set(SOURCES
@@ -64,14 +84,14 @@ add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${godot_cpp_SOURCE_DIR}/include
-    ${godot_cpp_SOURCE_DIR}/gen/include
+    ${GODOT_CPP_SOURCE_DIR}/include
+    ${GODOT_CPP_SOURCE_DIR}/gen/include
     ${USD_INSTALL_DIR}/include
 )
 
 # Link against godot-cpp, godot_extension_interface, and USD
 target_link_directories(${PROJECT_NAME} PRIVATE
-    ${godot_cpp_BINARY_DIR}/bin
+    ${GODOT_CPP_BINARY_DIR}/bin
     ${USD_INSTALL_DIR}/lib
 )
 
@@ -125,14 +145,27 @@ install(FILES
     DESTINATION .
 )
 
+# Install library to lib directory
+install(DIRECTORY bin/
+    DESTINATION lib
+)
+
 # Create addon structure
 install(DIRECTORY DESTINATION addons/godot-usd)
 install(FILES 
-    godot-usd.gdextension
     plugin.cfg
     plugin.gd
     DESTINATION addons/godot-usd
 )
-install(DIRECTORY bin/
-    DESTINATION addons/godot-usd/lib
+
+# Create a modified gdextension file for the addon that points to the correct location
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/godot-usd.gdextension
+    ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
+    COPYONLY
+)
+install(FILES 
+    ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
+    DESTINATION addons/godot-usd
+    RENAME godot-usd.gdextension
 )
