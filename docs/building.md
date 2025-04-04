@@ -22,13 +22,16 @@ This guide provides instructions for building the Godot-USD integration plugin f
 
 ## Quick Start
 
-The easiest way to build the plugin is to use the provided build scripts. You must set the USD_INSTALL_DIR environment variable to point to your USD installation:
+The easiest way to build the plugin is to use the provided build scripts. You must set both the USD_INSTALL_DIR and GODOT_SOURCE_DIR environment variables:
 
 ### On Linux/macOS
 
 ```bash
 # Set the path to your USD installation (required)
 export USD_INSTALL_DIR=/path/to/usd/install
+
+# Set the path to your Godot source code (required)
+export GODOT_SOURCE_DIR=/path/to/godot/source
 
 # Run the build script
 ./build.sh
@@ -40,16 +43,20 @@ export USD_INSTALL_DIR=/path/to/usd/install
 # Set the path to your USD installation (required)
 set USD_INSTALL_DIR=C:\path\to\usd\install
 
+# Set the path to your Godot source code (required)
+set GODOT_SOURCE_DIR=C:\path\to\godot\source
+
 # Run the build script
 build.bat
 ```
 
 These scripts will:
-1. Check if USD_INSTALL_DIR is set
-2. Create a build directory
-3. Configure the project with CMake
-4. Build the plugin with RelWithDebInfo configuration
-5. Install it to the local `addons/godot-usd` directory
+1. Check if USD_INSTALL_DIR and GODOT_SOURCE_DIR are set
+2. Verify that the Godot source directory contains the required files
+3. Create a build directory
+4. Configure the project with CMake
+5. Build the plugin with RelWithDebInfo configuration
+6. Install it to the local `addons/godot-usd` directory
 
 ## Manual Build Process
 
@@ -72,6 +79,7 @@ cd build
 # Configure with CMake
 cmake .. \
   -DUSD_INSTALL_DIR=/path/to/usd/install \
+  -DGODOT_SOURCE_DIR=/path/to/godot/source \
   -DCMAKE_BUILD_TYPE=Release
 
 # Build
@@ -91,6 +99,7 @@ cd build
 # Configure with CMake
 cmake .. ^
   -DUSD_INSTALL_DIR=C:\path\to\usd\install ^
+  -DGODOT_SOURCE_DIR=C:\path\to\godot\source ^
   -DCMAKE_BUILD_TYPE=Release ^
   -G "Visual Studio 17 2022" -A x64
 
@@ -105,10 +114,12 @@ cmake --install . --prefix=C:\path\to\your\godot\project
 
 The build system performs the following steps:
 
-1. **Checks for godot-cpp**: If the godot-cpp library is not found, it will be automatically cloned and built
-2. **Configures the build**: Sets up include paths and links to the required libraries
-3. **Builds the plugin**: Compiles the C++ code into a shared library
-4. **Creates the addon structure**: Organizes the files into a Godot addon structure
+1. **Fetches godot-cpp**: Uses CMake's FetchContent to download and make available the godot-cpp library
+2. **Creates an interface library**: Sets up an interface library for the Godot extension interface
+3. **Builds godot-cpp**: Compiles the godot-cpp library using SCons
+4. **Configures the build**: Sets up include paths and links to the required libraries
+5. **Builds the plugin**: Compiles the C++ code into a shared library
+6. **Creates the addon structure**: Organizes the files into a Godot addon structure
 
 ## Building for Different Platforms
 
@@ -149,7 +160,10 @@ cmake .. -DUSD_INSTALL_DIR=/absolute/path/to/usd/install
 
 #### godot-cpp Build Fails
 
-If the automatic godot-cpp build fails, you can build it manually:
+If the automatic godot-cpp build fails, you can try the following:
+
+1. Make sure SCons is installed and available in your PATH
+2. Try building godot-cpp manually:
 
 ```bash
 # Clone godot-cpp
@@ -157,12 +171,20 @@ git clone --recursive https://github.com/godotengine/godot-cpp.git
 
 # Build godot-cpp
 cd godot-cpp
-scons target=template_debug generate_bindings=yes
+scons target=template_release generate_bindings=yes
 cd ..
 
 # Then configure with the path to your godot-cpp
-cmake .. -DGODOT_CPP_PATH=/path/to/godot-cpp -DUSD_INSTALL_DIR=/path/to/usd/install
+cmake .. -DGODOT_CPP_SOURCE_DIR=/path/to/godot-cpp -DUSD_INSTALL_DIR=/path/to/usd/install -DGODOT_SOURCE_DIR=/path/to/godot/source
 ```
+
+#### Godot Extension Interface Not Found
+
+If you encounter errors related to gdextension_interface.h:
+
+1. Make sure GODOT_SOURCE_DIR points to a valid Godot engine source directory
+2. Verify that the file exists at `${GODOT_SOURCE_DIR}/core/extension/gdextension_interface.h`
+3. If you're using a custom Godot build, make sure it's compatible with the GDExtension API
 
 #### Compilation Errors
 

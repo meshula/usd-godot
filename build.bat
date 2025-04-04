@@ -9,6 +9,21 @@ if "%USD_INSTALL_DIR%"=="" (
     exit /b 1
 )
 
+:: Check if GODOT_SOURCE_DIR is defined
+if "%GODOT_SOURCE_DIR%"=="" (
+    echo Error: GODOT_SOURCE_DIR environment variable is not set.
+    echo Please set it to the path where Godot engine source code is located.
+    echo Example: set GODOT_SOURCE_DIR=C:\path\to\godot\source
+    exit /b 1
+)
+
+:: Verify that GODOT_SOURCE_DIR contains the required files
+if not exist "%GODOT_SOURCE_DIR%\core\extension\gdextension_interface.h" (
+    echo Error: gdextension_interface.h not found in Godot source at %GODOT_SOURCE_DIR%\core\extension\gdextension_interface.h
+    echo Please make sure GODOT_SOURCE_DIR points to a valid Godot engine source directory.
+    exit /b 1
+)
+
 :: Create build directory
 if not exist build mkdir build
 cd build
@@ -16,6 +31,7 @@ cd build
 :: Configure with CMake
 cmake .. ^
   -DUSD_INSTALL_DIR=%USD_INSTALL_DIR% ^
+  -DGODOT_SOURCE_DIR=%GODOT_SOURCE_DIR% ^
   -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
   -G "Visual Studio 17 2022" -A x64
 

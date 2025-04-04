@@ -27,7 +27,9 @@ export_presets.cfg
 *.gen.*
 
 # Build directories
+addons/
 build/
+build-usd/
 bin/
 lib/
 dist/
@@ -67,6 +69,7 @@ docs/doxygen/
 deps/
 third_party/build/
 external/build/
+godot-cpp/
 
 # Python related (for USD scripts)
 __pycache__/

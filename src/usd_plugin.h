@@ -2,6 +2,8 @@
 #define USD_PLUGIN_H
 
 #include <godot_cpp/classes/editor_plugin.hpp>
+#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/variant/string.hpp>
 
 namespace godot {
 
