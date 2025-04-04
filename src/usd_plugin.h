@@ -15,6 +15,7 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformOp.h>
+#include <pxr/usd/usdGeom/cube.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 

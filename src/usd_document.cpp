@@ -7,6 +7,7 @@
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/primitive_mesh.hpp>
+#include <godot_cpp/classes/box_mesh.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/animation_player.hpp>
@@ -99,6 +100,137 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
     }
 }
 
+void UsdDocument::_create_mesh_prim(Ref<Mesh> mesh,
+                        Node *p_node, UsdStageRefPtr p_stage, 
+                        const SdfPath &prim_path, Ref<UsdState> p_state) {
+    if (!p_node) {
+        return;
+    }
+
+    UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
+    
+    // Get mesh data
+    int surface_count = mesh->get_surface_count();
+    Array arrays = mesh->surface_get_arrays(0);
+
+    if (surface_count == 0 || arrays.size() < Mesh::ARRAY_MAX) {
+        // Fall back to a cube if we don't have valid arrays
+        UsdGeomCube cube = UsdGeomCube::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
+        cube.GetSizeAttr().Set(1.0);
+        //UtilityFunctions::print("USD Export: Added cube as fallback for ", prim_path.GetString());
+        return;
+    }
+
+    // For simplicity, we'll just export the first surface
+    // In a full implementation, we would handle multiple surfaces
+    
+    // Get the mesh arrays for the first surface
+    // Get vertices
+    PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+    
+    // Get indices (triangles)
+    PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+    
+    // Get normals
+    PackedVector3Array normals = arrays[Mesh::ARRAY_NORMAL];
+    
+    // Get UVs
+    PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
+
+    // Convert vertices to USD format
+    VtArray<GfVec3f> usd_points;
+    usd_points.reserve(vertices.size());
+    
+    for (int i = 0; i < vertices.size(); i++) {
+        Vector3 v = vertices[i];
+        usd_points.push_back(GfVec3f(v.x, v.y, v.z));
+    }
+    
+    // Set points
+    usd_mesh.GetPointsAttr().Set(usd_points);
+    
+    // Convert indices to USD format
+    // USD uses face counts and face indices
+    // Face counts is the number of vertices per face (3 for triangles)
+    // Face indices is the list of vertex indices
+    
+    // For triangles, each face has 3 vertices
+    VtArray<int> face_vertex_counts;
+    VtArray<int> face_vertex_indices;
+
+    // If we have indices, use them
+    if (indices.size() > 0) {
+        // Assuming triangles
+        int triangle_count = indices.size() / 3;
+        face_vertex_counts.reserve(triangle_count);
+        face_vertex_indices.reserve(indices.size());
+        
+        for (int i = 0; i < triangle_count; i++) {
+            face_vertex_counts.push_back(3); // 3 vertices per triangle
+            
+            // Add the 3 indices for this triangle
+            face_vertex_indices.push_back(indices[i * 3]);
+            face_vertex_indices.push_back(indices[i * 3 + 1]);
+            face_vertex_indices.push_back(indices[i * 3 + 2]);
+        }
+    } else {
+        // If we don't have indices, create triangles from vertices
+        // Assuming vertices are already arranged as triangles
+        int triangle_count = vertices.size() / 3;
+        face_vertex_counts.reserve(triangle_count);
+        face_vertex_indices.reserve(vertices.size());
+        
+        for (int i = 0; i < triangle_count; i++) {
+            face_vertex_counts.push_back(3); // 3 vertices per triangle
+            
+            // Add the 3 indices for this triangle
+            face_vertex_indices.push_back(i * 3);
+            face_vertex_indices.push_back(i * 3 + 1);
+            face_vertex_indices.push_back(i * 3 + 2);
+        }
+    }
+    
+    // Set face counts and indices
+    usd_mesh.GetFaceVertexCountsAttr().Set(face_vertex_counts);
+    usd_mesh.GetFaceVertexIndicesAttr().Set(face_vertex_indices);
+    
+    // Set normals if available
+    if (normals.size() > 0) {
+        VtArray<GfVec3f> usd_normals;
+        usd_normals.reserve(normals.size());
+        
+        for (int i = 0; i < normals.size(); i++) {
+            Vector3 n = normals[i];
+            usd_normals.push_back(GfVec3f(n.x, n.y, n.z));
+        }
+        
+        usd_mesh.GetNormalsAttr().Set(usd_normals);
+        
+        // Set interpolation to "vertex" for per-vertex normals
+        usd_mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
+    }
+    
+    // Set UVs if available
+    if (uvs.size() > 0) {
+        VtArray<GfVec2f> usd_uvs;
+        usd_uvs.reserve(uvs.size());
+        
+        for (int i = 0; i < uvs.size(); i++) {
+            Vector2 uv = uvs[i];
+            usd_uvs.push_back(GfVec2f(uv.x, uv.y));
+        }
+        
+        // For now, we'll skip setting UVs as it requires additional USD API knowledge
+        // In a full implementation, we would set UVs using the appropriate USD API
+        //UtilityFunctions::print("USD Export: UVs available but not exported for ", 
+        //                       prim_path.GetString());
+    }
+    
+    UtilityFunctions::print("USD Export: Added mesh with ",
+             String::num_int64(vertices.size()), " vertices and ", 
+             String::num_int64(face_vertex_counts.size()), " faces");
+}
+
 void UsdDocument::_convert_node_to_prim(Node *p_node, UsdStageRefPtr p_stage, const SdfPath &p_parent_path, Ref<UsdState> p_state) {
     if (!p_node) {
         return;
@@ -184,134 +316,54 @@ void UsdDocument::_convert_node_to_prim(Node *p_node, UsdStageRefPtr p_stage, co
             Ref<Mesh> mesh = mesh_instance->get_mesh();
             
             if (mesh.is_valid()) {
-                // Create a mesh prim
-                UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-                
-                // Get mesh data
-                int surface_count = mesh->get_surface_count();
-                
-                if (surface_count > 0) {
-                    // For simplicity, we'll just export the first surface
-                    // In a full implementation, we would handle multiple surfaces
+                // Check if this is a BoxMesh
+                Ref<BoxMesh> box_mesh = mesh;
+                if (box_mesh.is_valid()) {
+                    // Get the size from the BoxMesh
+                    Vector3 size = box_mesh->get_size();
                     
-                    // Get the mesh arrays for the first surface
-                    Array arrays = mesh->surface_get_arrays(0);
+                    // Check if the scale is uniform
+                    bool uniform_scale = (size.x == size.y && size.y == size.z);
                     
-                    // Check if we have valid arrays
-                    if (arrays.size() >= Mesh::ARRAY_MAX) {
-                        // Get vertices
-                        PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
-                        
-                        // Get indices (triangles)
-                        PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
-                        
-                        // Get normals
-                        PackedVector3Array normals = arrays[Mesh::ARRAY_NORMAL];
-                        
-                        // Get UVs
-                        PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
-                        
-                        // Convert vertices to USD format
-                        VtArray<GfVec3f> usd_points;
-                        usd_points.reserve(vertices.size());
-                        
-                        for (int i = 0; i < vertices.size(); i++) {
-                            Vector3 v = vertices[i];
-                            usd_points.push_back(GfVec3f(v.x, v.y, v.z));
-                        }
-                        
-                        // Set points
-                        usd_mesh.GetPointsAttr().Set(usd_points);
-                        
-                        // Convert indices to USD format
-                        // USD uses face counts and face indices
-                        // Face counts is the number of vertices per face (3 for triangles)
-                        // Face indices is the list of vertex indices
-                        
-                        // For triangles, each face has 3 vertices
-                        VtArray<int> face_vertex_counts;
-                        VtArray<int> face_vertex_indices;
-                        
-                        // If we have indices, use them
-                        if (indices.size() > 0) {
-                            // Assuming triangles
-                            int triangle_count = indices.size() / 3;
-                            face_vertex_counts.reserve(triangle_count);
-                            face_vertex_indices.reserve(indices.size());
-                            
-                            for (int i = 0; i < triangle_count; i++) {
-                                face_vertex_counts.push_back(3); // 3 vertices per triangle
-                                
-                                // Add the 3 indices for this triangle
-                                face_vertex_indices.push_back(indices[i * 3]);
-                                face_vertex_indices.push_back(indices[i * 3 + 1]);
-                                face_vertex_indices.push_back(indices[i * 3 + 2]);
-                            }
-                        } else {
-                            // If we don't have indices, create triangles from vertices
-                            // Assuming vertices are already arranged as triangles
-                            int triangle_count = vertices.size() / 3;
-                            face_vertex_counts.reserve(triangle_count);
-                            face_vertex_indices.reserve(vertices.size());
-                            
-                            for (int i = 0; i < triangle_count; i++) {
-                                face_vertex_counts.push_back(3); // 3 vertices per triangle
-                                
-                                // Add the 3 indices for this triangle
-                                face_vertex_indices.push_back(i * 3);
-                                face_vertex_indices.push_back(i * 3 + 1);
-                                face_vertex_indices.push_back(i * 3 + 2);
-                            }
-                        }
-                        
-                        // Set face counts and indices
-                        usd_mesh.GetFaceVertexCountsAttr().Set(face_vertex_counts);
-                        usd_mesh.GetFaceVertexIndicesAttr().Set(face_vertex_indices);
-                        
-                        // Set normals if available
-                        if (normals.size() > 0) {
-                            VtArray<GfVec3f> usd_normals;
-                            usd_normals.reserve(normals.size());
-                            
-                            for (int i = 0; i < normals.size(); i++) {
-                                Vector3 n = normals[i];
-                                usd_normals.push_back(GfVec3f(n.x, n.y, n.z));
-                            }
-                            
-                            usd_mesh.GetNormalsAttr().Set(usd_normals);
-                            
-                            // Set interpolation to "vertex" for per-vertex normals
-                            usd_mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
-                        }
-                        
-                        // Set UVs if available
-                        if (uvs.size() > 0) {
-                            VtArray<GfVec2f> usd_uvs;
-                            usd_uvs.reserve(uvs.size());
-                            
-                            for (int i = 0; i < uvs.size(); i++) {
-                                Vector2 uv = uvs[i];
-                                usd_uvs.push_back(GfVec2f(uv.x, uv.y));
-                            }
-                            
-                            // For now, we'll skip setting UVs as it requires additional USD API knowledge
-                            // In a full implementation, we would set UVs using the appropriate USD API
-                            UtilityFunctions::print("USD Export: UVs available but not exported for ", node_name);
-                        }
-                        
-                        UtilityFunctions::print("USD Export: Added mesh with ", String::num_int64(vertices.size()), " vertices and ", String::num_int64(face_vertex_counts.size()), " faces for ", node_name);
-                    } else {
-                        // Fallback to a cube if we don't have valid arrays
+                    if (uniform_scale) {
+                        // For uniform scale, we can just set the size attribute
                         UsdGeomCube cube = UsdGeomCube::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-                        cube.GetSizeAttr().Set(1.0);
-                        UtilityFunctions::print("USD Export: Added cube as fallback for ", node_name);
+                        
+                        // compensate for different scaling conventions on cubes.
+                        double cube_size = size.x * 0.25f;
+                        cube.GetSizeAttr().Set(cube_size);
+                        
+                        UtilityFunctions::print("USD Export: Added cube with uniform size ", cube_size * 2.0, " for ", node_name);
+                    } else {
+                        // For non-uniform scale, create a transform hierarchy
+                        
+                        // 1. Create a transform that will hold the scale
+                        SdfPath scale_path = prim_path.AppendChild(TfToken("Scale"));
+                        UsdGeomXform scale_xform = UsdGeomXform::Define(p_stage, scale_path);
+                        
+                        // Create a scale matrix
+                        GfMatrix4d scale_matrix(1.0);
+                        scale_matrix[0][0] = size.x;
+                        scale_matrix[1][1] = size.y;
+                        scale_matrix[2][2] = size.z;
+                        
+                        // Set the scale matrix
+                        UsdGeomXformable scale_xformable(scale_xform);
+                        UsdGeomXformOp scaleOp = scale_xformable.AddTransformOp();
+                        scaleOp.Set(scale_matrix);
+                        
+                        // 2. Create a unit cube under the scale transform
+                        UsdGeomCube cube = UsdGeomCube::Define(p_stage, scale_path.AppendChild(TfToken("Mesh")));
+                        
+                        // Set unit size (0.5 in USD since it's half-extent)
+                        cube.GetSizeAttr().Set(0.5);
+                        
+                        UtilityFunctions::print("USD Export: Added cube with non-uniform scale (", 
+                            size.x, ", ", size.y, ", ", size.z, ") for ", node_name);
                     }
                 } else {
-                    // Fallback to a cube if we don't have any surfaces
-                    UsdGeomCube cube = UsdGeomCube::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-                    cube.GetSizeAttr().Set(1.0);
-                    UtilityFunctions::print("USD Export: Added cube as fallback for ", node_name);
-                }
+                    _create_mesh_prim(mesh, p_node, p_stage, prim_path, p_state);
+                }            
             }
         } else if (Object::cast_to<Camera3D>(p_node)) {
             Camera3D *camera = Object::cast_to<Camera3D>(p_node);

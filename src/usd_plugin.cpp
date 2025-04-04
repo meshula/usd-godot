@@ -517,8 +517,21 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
         Ref<BoxMesh> box_mesh;
         box_mesh.instantiate();
         
-        // Set default size (can be overridden by transform)
-        box_mesh->set_size(Vector3(1.0, 1.0, 1.0));
+        // Get the size from the USD cube's size attribute
+        UsdGeomCube usdCube(p_prim);
+        double size = 2.0; // Default size (2.0 because UsdGeomCube size is the half-extent)
+        
+        if (usdCube) {
+            UsdAttribute sizeAttr = usdCube.GetSizeAttr();
+            if (sizeAttr) {
+                sizeAttr.Get(&size);
+                UtilityFunctions::print("USD Import: Cube size from USD: ", size);
+            } else {
+                UtilityFunctions::print("USD Import: No size attribute found for cube: ", prim_name, ", using default size");
+            }
+        }
+        
+        box_mesh->set_size(Vector3(size, size, size));
         
         // Apply the mesh to the instance
         mesh_instance->set_mesh(box_mesh);
