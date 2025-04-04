@@ -4,7 +4,7 @@ Thank you for your interest in contributing to the Godot-USD Integration project
 
 ## Code of Conduct
 
-Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to foster an inclusive and respectful community.
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to foster a welcoming and respectful community.
 
 ## Getting Started
 
