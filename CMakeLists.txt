@@ -45,7 +45,7 @@ endif()
 
 # Create an interface library for Godot extension interface
 add_library(godot_extension_interface INTERFACE)
-target_include_directories(godot_extension_interface INTERFACE 
+target_include_directories(godot_extension_interface INTERFACE
     ${GODOT_SOURCE_DIR}/core/extension
 )
 
@@ -62,7 +62,7 @@ if(NOT EXISTS "${GODOT_CPP_LIB}")
         message(FATAL_ERROR "Failed to build godot-cpp")
     endif()
 else()
-    message(STATUS "godot-cpp already built, skipping build step")
+    message(STATUS "godot-cpp already built skipping build step")
 endif()
 
 # Create an imported library for godot-cpp
@@ -83,6 +83,8 @@ set(SOURCES
     src/usd_export_settings.h
     src/usd_state.cpp
     src/usd_state.h
+    src/usd_mesh_import_helper.cpp
+    src/usd_mesh_import_helper.h
 )
 
 # Create the shared library
@@ -105,15 +107,15 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${GODOT_CPP_SOURCE_DIR}/gen/include
 )
 
-# Link against godot-cpp, godot_extension_interface, and USD
+# Link against godot-cpp godot_extension_interface and USD
 target_link_directories(${PROJECT_NAME} PRIVATE
     ${GODOT_CPP_BINARY_DIR}/bin
 )
 
 if(USD_STATIC_LIBS)
     # Link against individual USD libraries using the pxr targets
-    target_link_libraries(${PROJECT_NAME} PRIVATE 
-        godot-cpp 
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        godot-cpp
         godot_extension_interface
         usd
         usdGeom
@@ -140,10 +142,14 @@ else()
     target_link_libraries(${PROJECT_NAME} PRIVATE godot-cpp godot_extension_interface usd)
 endif()
 
-# Set output directory
+# Set output directory and RPATH settings for macOS
 set_target_properties(${PROJECT_NAME} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+    INSTALL_RPATH "@loader_path"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH TRUE
+    MACOSX_RPATH TRUE
 )
 
 # Installation
@@ -153,7 +159,7 @@ install(TARGETS ${PROJECT_NAME}
 )
 
 # Install GDExtension and plugin configuration files
-install(FILES 
+install(FILES
     godot-usd.gdextension
     plugin.cfg
     plugin.gd
@@ -167,7 +173,7 @@ install(DIRECTORY bin/
 
 # Create addon structure
 install(DIRECTORY DESTINATION addons/godot-usd)
-install(FILES 
+install(FILES
     plugin.cfg
     plugin.gd
     DESTINATION addons/godot-usd
@@ -179,7 +185,7 @@ configure_file(
     ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
     COPYONLY
 )
-install(FILES 
+install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
     DESTINATION addons/godot-usd
     RENAME godot-usd.gdextension

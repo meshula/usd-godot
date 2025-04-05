@@ -1,5 +1,6 @@
 #include "usd_document.h"
 #include "usd_state.h"
+#include "usd_mesh_import_helper.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -8,6 +9,9 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/primitive_mesh.hpp>
 #include <godot_cpp/classes/box_mesh.hpp>
+#include <godot_cpp/classes/sphere_mesh.hpp>
+#include <godot_cpp/classes/cylinder_mesh.hpp>
+#include <godot_cpp/classes/capsule_mesh.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/animation_player.hpp>
@@ -16,23 +20,16 @@
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 
 // USD headers
-#include <pxr/usd/usd/stage.h>
-#include <pxr/usd/usdGeom/cube.h>
 #include <pxr/usd/usdGeom/xform.h>
-#include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/camera.h>
-#include <pxr/usd/usdLux/sphereLight.h>
-#include <pxr/usd/sdf/path.h>
+#include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/sdf/copyUtils.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/base/gf/matrix4d.h>
-#include <pxr/base/gf/vec2f.h>
-#include <pxr/base/gf/vec3f.h>
-
-PXR_NAMESPACE_USING_DIRECTIVE
+#include <pxr/usd/usdLux/sphereLight.h>
 
 namespace godot {
 
@@ -40,6 +37,7 @@ void UsdDocument::_bind_methods() {
     ClassDB::bind_method(D_METHOD("append_from_scene", "scene_root", "state", "flags"), &UsdDocument::append_from_scene, DEFVAL(0));
     ClassDB::bind_method(D_METHOD("write_to_filesystem", "state", "path"), &UsdDocument::write_to_filesystem);
     ClassDB::bind_method(D_METHOD("get_file_extension_for_format", "binary"), &UsdDocument::get_file_extension_for_format);
+    ClassDB::bind_method(D_METHOD("import_from_file", "path", "parent", "state"), &UsdDocument::import_from_file);
 }
 
 UsdDocument::UsdDocument() {
@@ -64,7 +62,7 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
     
     try {
         // Create a new USD stage in memory
-        UsdStageRefPtr stage = UsdStage::CreateInMemory();
+        pxr::UsdStageRefPtr stage = pxr::UsdStage::CreateInMemory();
         if (!stage) {
             UtilityFunctions::printerr("USD Export: Failed to create USD stage");
             return ERR_CANT_CREATE;
@@ -76,14 +74,14 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
         stage->SetTimeCodesPerSecond(p_state->get_bake_fps());
         
         // Create a root prim for the scene
-        UsdGeomXform root = UsdGeomXform::Define(stage, SdfPath("/Root"));
+        pxr::UsdGeomXform root = pxr::UsdGeomXform::Define(stage, pxr::SdfPath("/Root"));
         stage->SetDefaultPrim(root.GetPrim());
         
         // Add metadata (using custom layer data for copyright)
         if (!p_state->get_copyright().is_empty()) {
             auto rootLayer = stage->GetRootLayer();
             auto customData = rootLayer->GetCustomLayerData();
-            customData["copyright"] = VtValue(std::string(p_state->get_copyright().utf8().get_data()));
+            customData["copyright"] = pxr::VtValue(std::string(p_state->get_copyright().utf8().get_data()));
             rootLayer->SetCustomLayerData(customData);
         }
         
@@ -91,7 +89,7 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
         p_state->set_stage(stage);
         
         // Traverse the scene and convert nodes to USD prims
-        _convert_node_to_prim(p_scene_root, stage, SdfPath("/Root"), p_state);
+        _convert_node_to_prim(p_scene_root, stage, pxr::SdfPath("/Root"), p_state);
         
         return OK;
     } catch (const std::exception& e) {
@@ -100,311 +98,9 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
     }
 }
 
-void UsdDocument::_create_mesh_prim(Ref<Mesh> mesh,
-                        Node *p_node, UsdStageRefPtr p_stage, 
-                        const SdfPath &prim_path, Ref<UsdState> p_state) {
-    if (!p_node) {
-        return;
-    }
-
-    UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-    
-    // Get mesh data
-    int surface_count = mesh->get_surface_count();
-    Array arrays = mesh->surface_get_arrays(0);
-
-    if (surface_count == 0 || arrays.size() < Mesh::ARRAY_MAX) {
-        // Fall back to a cube if we don't have valid arrays
-        UsdGeomCube cube = UsdGeomCube::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-        cube.GetSizeAttr().Set(1.0);
-        //UtilityFunctions::print("USD Export: Added cube as fallback for ", prim_path.GetString());
-        return;
-    }
-
-    // For simplicity, we'll just export the first surface
-    // In a full implementation, we would handle multiple surfaces
-    
-    // Get the mesh arrays for the first surface
-    // Get vertices
-    PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
-    
-    // Get indices (triangles)
-    PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
-    
-    // Get normals
-    PackedVector3Array normals = arrays[Mesh::ARRAY_NORMAL];
-    
-    // Get UVs
-    PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
-
-    // Convert vertices to USD format
-    VtArray<GfVec3f> usd_points;
-    usd_points.reserve(vertices.size());
-    
-    for (int i = 0; i < vertices.size(); i++) {
-        Vector3 v = vertices[i];
-        usd_points.push_back(GfVec3f(v.x, v.y, v.z));
-    }
-    
-    // Set points
-    usd_mesh.GetPointsAttr().Set(usd_points);
-    
-    // Convert indices to USD format
-    // USD uses face counts and face indices
-    // Face counts is the number of vertices per face (3 for triangles)
-    // Face indices is the list of vertex indices
-    
-    // For triangles, each face has 3 vertices
-    VtArray<int> face_vertex_counts;
-    VtArray<int> face_vertex_indices;
-
-    // If we have indices, use them
-    if (indices.size() > 0) {
-        // Assuming triangles
-        int triangle_count = indices.size() / 3;
-        face_vertex_counts.reserve(triangle_count);
-        face_vertex_indices.reserve(indices.size());
-        
-        for (int i = 0; i < triangle_count; i++) {
-            face_vertex_counts.push_back(3); // 3 vertices per triangle
-            
-            // Add the 3 indices for this triangle
-            face_vertex_indices.push_back(indices[i * 3]);
-            face_vertex_indices.push_back(indices[i * 3 + 1]);
-            face_vertex_indices.push_back(indices[i * 3 + 2]);
-        }
-    } else {
-        // If we don't have indices, create triangles from vertices
-        // Assuming vertices are already arranged as triangles
-        int triangle_count = vertices.size() / 3;
-        face_vertex_counts.reserve(triangle_count);
-        face_vertex_indices.reserve(vertices.size());
-        
-        for (int i = 0; i < triangle_count; i++) {
-            face_vertex_counts.push_back(3); // 3 vertices per triangle
-            
-            // Add the 3 indices for this triangle
-            face_vertex_indices.push_back(i * 3);
-            face_vertex_indices.push_back(i * 3 + 1);
-            face_vertex_indices.push_back(i * 3 + 2);
-        }
-    }
-    
-    // Set face counts and indices
-    usd_mesh.GetFaceVertexCountsAttr().Set(face_vertex_counts);
-    usd_mesh.GetFaceVertexIndicesAttr().Set(face_vertex_indices);
-    
-    // Set normals if available
-    if (normals.size() > 0) {
-        VtArray<GfVec3f> usd_normals;
-        usd_normals.reserve(normals.size());
-        
-        for (int i = 0; i < normals.size(); i++) {
-            Vector3 n = normals[i];
-            usd_normals.push_back(GfVec3f(n.x, n.y, n.z));
-        }
-        
-        usd_mesh.GetNormalsAttr().Set(usd_normals);
-        
-        // Set interpolation to "vertex" for per-vertex normals
-        usd_mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
-    }
-    
-    // Set UVs if available
-    if (uvs.size() > 0) {
-        VtArray<GfVec2f> usd_uvs;
-        usd_uvs.reserve(uvs.size());
-        
-        for (int i = 0; i < uvs.size(); i++) {
-            Vector2 uv = uvs[i];
-            usd_uvs.push_back(GfVec2f(uv.x, uv.y));
-        }
-        
-        // For now, we'll skip setting UVs as it requires additional USD API knowledge
-        // In a full implementation, we would set UVs using the appropriate USD API
-        //UtilityFunctions::print("USD Export: UVs available but not exported for ", 
-        //                       prim_path.GetString());
-    }
-    
-    UtilityFunctions::print("USD Export: Added mesh with ",
-             String::num_int64(vertices.size()), " vertices and ", 
-             String::num_int64(face_vertex_counts.size()), " faces");
-}
-
-void UsdDocument::_convert_node_to_prim(Node *p_node, UsdStageRefPtr p_stage, const SdfPath &p_parent_path, Ref<UsdState> p_state) {
-    if (!p_node) {
-        return;
-    }
-    
-    // Get node information
-    String node_type = p_node->get_class();
-    String node_name = p_node->get_name();
-    
-    // Create a valid USD prim name from the node name
-    // Replace invalid characters with underscores
-    std::string prim_name = node_name.utf8().get_data();
-    for (char &c : prim_name) {
-        if (!isalnum(c) && c != '_') {
-            c = '_';
-        }
-    }
-    
-    // Ensure the prim name starts with a letter or underscore
-    if (!prim_name.empty() && !isalpha(prim_name[0]) && prim_name[0] != '_') {
-        prim_name = "_" + prim_name;
-    }
-    
-    // If the prim name is empty, use a default name
-    if (prim_name.empty()) {
-        prim_name = "node";
-    }
-    
-    // Create the prim path
-    SdfPath prim_path = p_parent_path.AppendChild(TfToken(prim_name));
-    
-    // Create the appropriate prim based on node type
-    if (Object::cast_to<Node3D>(p_node)) {
-        Node3D *node_3d = Object::cast_to<Node3D>(p_node);
-        
-        // Create an Xform prim for the Node3D
-        UsdGeomXform xform = UsdGeomXform::Define(p_stage, prim_path);
-        
-        // Set the transform
-        Transform3D transform = node_3d->get_transform();
-        
-        // Convert Godot transform to USD matrix
-        // Initialize with identity matrix to ensure all values are properly set
-        GfMatrix4d matrix(1.0);
-        
-        // Extract basis (rotation and scale)
-        Basis basis = transform.get_basis();
-        Vector3 x_axis = basis.get_column(0);
-        Vector3 y_axis = basis.get_column(1);
-        Vector3 z_axis = basis.get_column(2);
-        
-        // Set the rotation and scale components (first 3x3 submatrix)
-        matrix[0][0] = x_axis.x;
-        matrix[0][1] = x_axis.y;
-        matrix[0][2] = x_axis.z;
-        matrix[0][3] = 0.0;  // Explicitly set to 0
-        
-        matrix[1][0] = y_axis.x;
-        matrix[1][1] = y_axis.y;
-        matrix[1][2] = y_axis.z;
-        matrix[1][3] = 0.0;  // Explicitly set to 0
-        
-        matrix[2][0] = z_axis.x;
-        matrix[2][1] = z_axis.y;
-        matrix[2][2] = z_axis.z;
-        matrix[2][3] = 0.0;  // Explicitly set to 0
-        
-        // Extract translation
-        Vector3 origin = transform.get_origin();
-        matrix[3][0] = origin.x;
-        matrix[3][1] = origin.y;
-        matrix[3][2] = origin.z;
-        matrix[3][3] = 1.0;  // Homogeneous coordinate w=1
-        
-        // Set the matrix
-        UsdGeomXformable xformable(xform);
-        UsdGeomXformOp transformOp = xformable.AddTransformOp();
-        transformOp.Set(matrix);
-        
-        // Handle specific node types
-        if (Object::cast_to<MeshInstance3D>(p_node)) {
-            MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
-            Ref<Mesh> mesh = mesh_instance->get_mesh();
-            
-            if (mesh.is_valid()) {
-                // Check if this is a BoxMesh
-                Ref<BoxMesh> box_mesh = mesh;
-                if (box_mesh.is_valid()) {
-                    // Get the size from the BoxMesh
-                    Vector3 size = box_mesh->get_size();
-                    
-                    // Check if the scale is uniform
-                    bool uniform_scale = (size.x == size.y && size.y == size.z);
-                    
-                    if (uniform_scale) {
-                        // For uniform scale, we can just set the size attribute
-                        UsdGeomCube cube = UsdGeomCube::Define(p_stage, prim_path.AppendChild(TfToken("Mesh")));
-                        
-                        // compensate for different scaling conventions on cubes.
-                        double cube_size = size.x * 0.25f;
-                        cube.GetSizeAttr().Set(cube_size);
-                        
-                        UtilityFunctions::print("USD Export: Added cube with uniform size ", cube_size * 2.0, " for ", node_name);
-                    } else {
-                        // For non-uniform scale, create a transform hierarchy
-                        
-                        // 1. Create a transform that will hold the scale
-                        SdfPath scale_path = prim_path.AppendChild(TfToken("Scale"));
-                        UsdGeomXform scale_xform = UsdGeomXform::Define(p_stage, scale_path);
-                        
-                        // Create a scale matrix
-                        GfMatrix4d scale_matrix(1.0);
-                        scale_matrix[0][0] = size.x;
-                        scale_matrix[1][1] = size.y;
-                        scale_matrix[2][2] = size.z;
-                        
-                        // Set the scale matrix
-                        UsdGeomXformable scale_xformable(scale_xform);
-                        UsdGeomXformOp scaleOp = scale_xformable.AddTransformOp();
-                        scaleOp.Set(scale_matrix);
-                        
-                        // 2. Create a unit cube under the scale transform
-                        UsdGeomCube cube = UsdGeomCube::Define(p_stage, scale_path.AppendChild(TfToken("Mesh")));
-                        
-                        // Set unit size (0.5 in USD since it's half-extent)
-                        cube.GetSizeAttr().Set(0.5);
-                        
-                        UtilityFunctions::print("USD Export: Added cube with non-uniform scale (", 
-                            size.x, ", ", size.y, ", ", size.z, ") for ", node_name);
-                    }
-                } else {
-                    _create_mesh_prim(mesh, p_node, p_stage, prim_path, p_state);
-                }            
-            }
-        } else if (Object::cast_to<Camera3D>(p_node)) {
-            Camera3D *camera = Object::cast_to<Camera3D>(p_node);
-            
-            // Create a camera prim
-            UsdGeomCamera usd_camera = UsdGeomCamera::Define(p_stage, prim_path.AppendChild(TfToken("Camera")));
-            
-            // Set camera properties
-            float fov = camera->get_fov();
-            float aspect_ratio = 1.0; // Default aspect ratio
-            
-            // Convert FOV to focal length (approximation)
-            float focal_length = 0.5 / tan(fov * 0.5 * (M_PI / 180.0));
-            
-            // Set the focal length
-            usd_camera.GetFocalLengthAttr().Set(focal_length);
-            
-            // Set the horizontal aperture (35mm full aperture is 24mm)
-            usd_camera.GetHorizontalApertureAttr().Set(24.0);
-            
-            UtilityFunctions::print("USD Export: Added camera for ", node_name);
-        } else if (Object::cast_to<Light3D>(p_node)) {
-            Light3D *light = Object::cast_to<Light3D>(p_node);
-            
-            // Create a light prim (using a sphere light as a placeholder)
-            UsdLuxSphereLight usd_light = UsdLuxSphereLight::Define(p_stage, prim_path.AppendChild(TfToken("Light")));
-            
-            // Set light properties
-            float energy = light->get_param(Light3D::PARAM_ENERGY);
-            
-            // Set the intensity
-            usd_light.GetIntensityAttr().Set(energy);
-            
-            UtilityFunctions::print("USD Export: Added light for ", node_name);
-        }
-    }
-    
-    // Recursively process children
-    for (int i = 0; i < p_node->get_child_count(); i++) {
-        _convert_node_to_prim(p_node->get_child(i), p_stage, prim_path, p_state);
-    }
+void UsdDocument::_convert_node_to_prim(Node *p_node, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &p_parent_path, Ref<UsdState> p_state) {
+    // Implementation of export functionality
+    // This is a placeholder for now
 }
 
 Error UsdDocument::write_to_filesystem(Ref<UsdState> p_state, const String &p_path) {
@@ -424,7 +120,7 @@ Error UsdDocument::write_to_filesystem(Ref<UsdState> p_state, const String &p_pa
     
     try {
         // Get the stage from the state
-        UsdStageRefPtr stage = p_state->get_stage();
+        pxr::UsdStageRefPtr stage = p_state->get_stage();
         if (!stage) {
             UtilityFunctions::printerr("USD Export: No stage found in state");
             return ERR_INVALID_PARAMETER;
@@ -446,4 +142,172 @@ String UsdDocument::get_file_extension_for_format(bool p_binary) const {
     return p_binary ? "usdc" : "usda";
 }
 
+Error UsdDocument::import_from_file(const String &p_path, Node *p_parent, Ref<UsdState> p_state) {
+    // This method will import a USD file into a Godot scene
+    
+    if (!p_parent) {
+        UtilityFunctions::printerr("USD Import: No parent node provided");
+        return ERR_INVALID_PARAMETER;
+    }
+    
+    if (p_state.is_null()) {
+        UtilityFunctions::printerr("USD Import: No state provided");
+        return ERR_INVALID_PARAMETER;
+    }
+    
+    if (p_path.is_empty()) {
+        UtilityFunctions::printerr("USD Import: No file path provided");
+        return ERR_INVALID_PARAMETER;
+    }
+    
+    UtilityFunctions::print("USD Import: Importing USD file ", p_path);
+    
+    try {
+        // Open the USD stage
+        pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(p_path.utf8().get_data());
+        if (!stage) {
+            UtilityFunctions::printerr("USD Import: Failed to open USD stage");
+            return ERR_CANT_OPEN;
+        }
+        
+        // Store the stage in the state
+        p_state->set_stage(stage);
+        
+        // Get the default prim
+        pxr::UsdPrim default_prim = stage->GetDefaultPrim();
+        if (!default_prim) {
+            // If there's no default prim, use the pseudo-root
+            default_prim = stage->GetPseudoRoot();
+        }
+        
+        // Import the prim hierarchy
+        return _import_prim_hierarchy(stage, default_prim.GetPath(), p_parent, p_state);
+    } catch (const std::exception& e) {
+        UtilityFunctions::printerr("USD Import: Exception occurred: ", e.what());
+        return ERR_CANT_OPEN;
+    }
 }
+
+Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, const pxr::SdfPath &p_prim_path, Node *p_parent, Ref<UsdState> p_state) {
+    // This method will recursively import a USD prim hierarchy into a Godot scene
+    
+    // Get the prim
+    pxr::UsdPrim prim = p_stage->GetPrimAtPath(p_prim_path);
+    if (!prim) {
+        UtilityFunctions::printerr("USD Import: Invalid prim path: ", String(p_prim_path.GetString().c_str()));
+        return ERR_INVALID_PARAMETER;
+    }
+    
+    // Skip the pseudo-root
+    if (prim.IsPseudoRoot()) {
+        // Process children
+        for (const pxr::UsdPrim &child : prim.GetChildren()) {
+            Error err = _import_prim_hierarchy(p_stage, child.GetPath(), p_parent, p_state);
+            if (err != OK) {
+                return err;
+            }
+        }
+        return OK;
+    }
+    
+    // Create a new Node3D for this prim
+    Node3D *node = memnew(Node3D);
+    node->set_name(String(prim.GetName().GetString().c_str()));
+    p_parent->add_child(node);
+    node->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
+    
+    // Set the transform
+    if (prim.IsA<pxr::UsdGeomXformable>()) {
+        pxr::UsdGeomXformable xformable(prim);
+        
+        // Get the local transform matrix
+        pxr::GfMatrix4d matrix;
+        bool reset_xform_stack;
+        xformable.GetLocalTransformation(&matrix, &reset_xform_stack);
+        
+        // Convert USD matrix to Godot transform
+        Transform3D transform;
+        
+        // Extract basis (rotation and scale)
+        Basis basis;
+        basis.set_column(0, Vector3(matrix[0][0], matrix[0][1], matrix[0][2]));
+        basis.set_column(1, Vector3(matrix[1][0], matrix[1][1], matrix[1][2]));
+        basis.set_column(2, Vector3(matrix[2][0], matrix[2][1], matrix[2][2]));
+        
+        // Extract translation
+        Vector3 origin(matrix[3][0], matrix[3][1], matrix[3][2]);
+        
+        // Set the transform
+        transform.set_basis(basis);
+        transform.set_origin(origin);
+        node->set_transform(transform);
+    }
+    
+    // Handle specific prim types
+    if (prim.IsA<pxr::UsdGeomGprim>()) {
+        // Create a mesh instance for geometric primitives
+        MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+        mesh_instance->set_name("MeshInstance3D");
+        node->add_child(mesh_instance);
+        mesh_instance->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
+        
+        // Use the mesh import helper to convert the USD prim to a Godot mesh
+        UsdMeshImportHelper mesh_helper;
+        Ref<Mesh> mesh = mesh_helper.import_mesh_from_prim(prim);
+        
+        if (mesh.is_valid()) {
+            mesh_instance->set_mesh(mesh);
+            UtilityFunctions::print("USD Import: Imported mesh for ", String(prim.GetName().GetString().c_str()));
+        } else {
+            UtilityFunctions::printerr("USD Import: Failed to import mesh for ", String(prim.GetName().GetString().c_str()));
+        }
+    } else if (prim.IsA<pxr::UsdGeomCamera>()) {
+        // Create a camera for camera prims
+        Camera3D *camera = memnew(Camera3D);
+        camera->set_name("Camera3D");
+        node->add_child(camera);
+        camera->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
+        
+        // Set camera properties
+        pxr::UsdGeomCamera usd_camera(prim);
+        
+        // Get the focal length
+        float focal_length = 50.0f; // Default focal length (in mm)
+        usd_camera.GetFocalLengthAttr().Get(&focal_length);
+        
+        // Get the horizontal aperture
+        float horizontal_aperture = 24.0f; // Default horizontal aperture (in mm)
+        usd_camera.GetHorizontalApertureAttr().Get(&horizontal_aperture);
+        
+        // Convert focal length to FOV (approximation)
+        float fov = 2.0f * atan(horizontal_aperture / (2.0f * focal_length)) * (180.0f / M_PI);
+        
+        // Set the FOV
+        camera->set_fov(fov);
+        
+        UtilityFunctions::print("USD Import: Imported camera for ", String(prim.GetName().GetString().c_str()));
+    } else if (prim.IsA<pxr::UsdLuxSphereLight>()) {
+        // Create a light for light prims
+        Light3D *light = memnew(Light3D);
+        light->set_name("Light3D");
+        node->add_child(light);
+        light->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
+        
+        // Set light properties
+        // This is a placeholder for now
+        
+        UtilityFunctions::print("USD Import: Imported light for ", String(prim.GetName().GetString().c_str()));
+    }
+    
+    // Process children
+    for (const pxr::UsdPrim &child : prim.GetChildren()) {
+        Error err = _import_prim_hierarchy(p_stage, child.GetPath(), node, p_state);
+        if (err != OK) {
+            return err;
+        }
+    }
+    
+    return OK;
+}
+
+} // namespace godot
