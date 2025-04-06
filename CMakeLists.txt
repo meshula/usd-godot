@@ -85,6 +85,8 @@ set(SOURCES
     src/usd_state.h
     src/usd_mesh_import_helper.cpp
     src/usd_mesh_import_helper.h
+    src/usd_mesh_export_helper.cpp
+    src/usd_mesh_export_helper.h
 )
 
 # Create the shared library

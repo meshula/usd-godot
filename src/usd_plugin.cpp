@@ -1,6 +1,8 @@
 #include "usd_plugin.h"
 #include "usd_document.h"
 #include "usd_export_settings.h"
+#include "usd_mesh_export_helper.h"
+#include "usd_mesh_import_helper.h"
 #include "usd_state.h"
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
@@ -464,7 +466,7 @@ bool USDPlugin::_apply_transform_from_usd_prim(const UsdPrim &p_prim, Node3D *p_
     // Apply the transform to the node
     p_node->set_transform(transform);
     
-    UtilityFunctions::print("USD Import: Applied transform to node: ", p_node->get_name());
+    //UtilityFunctions::print("USD Import: Applied transform to node: ", p_node->get_name());
     return true;
 }
 
@@ -483,8 +485,10 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
     String prim_type = String(p_prim.GetTypeName().GetText());
     String prim_name = String(p_prim.GetName().GetText());
     
+    bool prim_is_mesh = !!pxr::UsdGeomGprim(p_prim);
+
     // Debug output
-    UtilityFunctions::print("USD Import: Converting prim: ", prim_name, " with type: ", prim_type);
+    //UtilityFunctions::print("USD Import: Converting prim: ", prim_name, " with type: ", prim_type);
     
     // Create a node based on the prim type
     Node *node = nullptr;
@@ -506,98 +510,34 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
         // Apply transform from USD prim
         _apply_transform_from_usd_prim(p_prim, scope);
         
-        UtilityFunctions::print("USD Import: Created Scope node: ", prim_name);
+        //UtilityFunctions::print("USD Import: Created Scope node: ", prim_name);
         node = scope;
-    } else if (prim_type == "Cube") {
+    } else if (prim_type == "Material" || prim_type == "Shader") {
+        // Skip materials and shaders for now
+        // In a full implementation, we would create materials and shaders
+        // UtilityFunctions::print("USD Import: Skipping Material/Shader: ", prim_name);
+    } else if (prim_is_mesh) {
         // Create a MeshInstance3D with a BoxMesh for Cube prims
         MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
         mesh_instance->set_name(prim_name);
         
-        // Create a box mesh
-        Ref<BoxMesh> box_mesh;
-        box_mesh.instantiate();
-        
-        // Get the size from the USD cube's size attribute
-        UsdGeomCube usdCube(p_prim);
-        double size = 2.0; // Default size (2.0 because UsdGeomCube size is the half-extent)
-        
-        if (usdCube) {
-            UsdAttribute sizeAttr = usdCube.GetSizeAttr();
-            if (sizeAttr) {
-                sizeAttr.Get(&size);
-                UtilityFunctions::print("USD Import: Cube size from USD: ", size);
-            } else {
-                UtilityFunctions::print("USD Import: No size attribute found for cube: ", prim_name, ", using default size");
-            }
-        }
-        
-        box_mesh->set_size(Vector3(size, size, size));
-        
-        // Apply the mesh to the instance
+        UsdMeshImportHelper helper;
+        Ref<Mesh> box_mesh = helper.import_mesh_from_prim(p_prim);
+
         mesh_instance->set_mesh(box_mesh);
-        
-        // Check for displayColor attribute
-        UsdPrim usdPrim(p_prim);
-        if (usdPrim.HasAttribute(TfToken("primvars:displayColor"))) {
-            // Get the display color
-            UsdAttribute displayColorAttr = usdPrim.GetAttribute(TfToken("primvars:displayColor"));
-            VtArray<GfVec3f> displayColors;
-            if (displayColorAttr.Get(&displayColors) && !displayColors.empty()) {
-                // Check for colorSpace metadata
-                std::string colorSpace = "srgb";
-                // In the example, colorSpace is a metadata on the displayColor attribute
-                TfToken colorSpaceToken("colorSpace");
-                if (displayColorAttr.HasMetadata(colorSpaceToken)) {
-                    std::string colorSpaceValue;
-                    displayColorAttr.GetMetadata(colorSpaceToken, &colorSpaceValue);
-                    colorSpace = colorSpaceValue;
-                    UtilityFunctions::print("USD Import: Found color space for cube: ", prim_name, 
-                        " colorSpace: ", String(colorSpace.c_str()));
-                }
-                // Create a simple material
-                Ref<Material> material;
-                material.instantiate();
-                
-                // Set the albedo color from the displayColor
-                GfVec3f color = displayColors[0];
-                
-                // Log the color values
-                UtilityFunctions::print("USD Import: Found display color for cube: ", prim_name, 
-                    " RGB: (", color[0], ", ", color[1], ", ", color[2], ")");
-                
-                // Create a StandardMaterial3D
-                Ref<StandardMaterial3D> stdMaterial;
-                stdMaterial.instantiate();
-                
-                // Set the albedo color from the displayColor
-                Color godotColor(color[0], color[1], color[2]);
-                stdMaterial->set_albedo(godotColor);
-                
-                // Apply the material to the mesh
-                mesh_instance->set_surface_override_material(0, stdMaterial);
-                
-                UtilityFunctions::print("USD Import: Successfully applied display color to cube: ", prim_name, 
-                    " RGB: (", color[0], ", ", color[1], ", ", color[2], ")");
-            }
+        auto mat = helper.create_material(p_prim);
+                    
+        // Apply the material to the mesh
+        if (mat.is_valid()) {
+            mesh_instance->set_surface_override_material(0, mat);
         }
-        
+
         // Apply transform from USD prim
         _apply_transform_from_usd_prim(p_prim, mesh_instance);
         
-        UtilityFunctions::print("USD Import: Created Cube node: ", prim_name);
+        //UtilityFunctions::print("USD Import: Created ", prim_type, " node: ", prim_name);
         
         node = mesh_instance;
-    } else if (prim_type == "Material" || prim_type == "Shader") {
-        // Skip materials and shaders for now
-        // In a full implementation, we would create materials and shaders
-        UtilityFunctions::print("USD Import: Skipping Material/Shader: ", prim_name);
-        
-        // Process children even though we're not creating a node
-        for (UsdPrim child : p_prim.GetChildren()) {
-            _convert_prim_to_node(child, p_parent, p_scene_root);
-        }
-        
-        return nullptr;
     } else {
         // For empty or unknown prim types, create a Node3D
         // This handles cases like "Shapes" and "Materials" which have empty type names

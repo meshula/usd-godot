@@ -122,6 +122,21 @@ The export process follows these steps:
 5. The plugin applies export settings (binary format, flatten stage, etc.)
 6. The plugin writes the USD stage to the specified file path
 
+### Code Organization
+
+To maintain clean and maintainable code, we will follow these guidelines:
+
+1. **Helper Functions for Node Conversion**
+   - Use dedicated helper functions for converting different node types to USD prims and also to Godot nodes
+   - This improves code readability and makes the conversion process more modular
+   - Each helper function should handle a specific node type or conversion task
+   - Example: `_convert_box_mesh_to_cube()`, `_convert_mesh_to_usd_mesh()`, etc.
+
+2. **Separation of Concerns**
+   - Keep transformation logic separate from geometry conversion
+   - Handle materials in dedicated functions
+   - Organize animation conversion in its own set of helpers
+
 ## Testing Plan
 
 We will test the import/export features with various scenes, including:

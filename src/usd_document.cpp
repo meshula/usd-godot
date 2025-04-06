@@ -1,6 +1,7 @@
 #include "usd_document.h"
 #include "usd_state.h"
 #include "usd_mesh_import_helper.h"
+#include "usd_mesh_export_helper.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -99,8 +100,89 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
 }
 
 void UsdDocument::_convert_node_to_prim(Node *p_node, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &p_parent_path, Ref<UsdState> p_state) {
-    // Implementation of export functionality
-    // This is a placeholder for now
+    // Check if the node is valid
+    if (!p_node) {
+        UtilityFunctions::printerr("USD Export: Invalid node");
+        return;
+    }
+    
+    // Get the node name
+    String node_name = p_node->get_name();
+    
+    // Create a valid USD path name (replace invalid characters)
+    String valid_name = node_name.replace(":", "_").replace(".", "_");
+    
+    // Create a path for this node
+    pxr::SdfPath node_path = p_parent_path.AppendChild(pxr::TfToken(valid_name.utf8().get_data()));
+    
+    // Create a USD prim based on the node type
+    if (p_node->is_class("Node3D")) {
+        // Create a transform prim
+        pxr::UsdGeomXform xform = pxr::UsdGeomXform::Define(p_stage, node_path);
+        
+        // Set the transform
+        Node3D *node_3d = Object::cast_to<Node3D>(p_node);
+        if (node_3d) {
+            // Get the transform
+            Transform3D transform = node_3d->get_transform();
+            
+            // Extract basis (rotation and scale)
+            Basis basis = transform.get_basis();
+            
+            // Extract translation
+            Vector3 origin = transform.get_origin();
+            
+            // Create a USD matrix
+            pxr::GfMatrix4d matrix;
+            matrix.SetRow(0, pxr::GfVec4d(basis.get_column(0).x, basis.get_column(0).y, basis.get_column(0).z, 0.0));
+            matrix.SetRow(1, pxr::GfVec4d(basis.get_column(1).x, basis.get_column(1).y, basis.get_column(1).z, 0.0));
+            matrix.SetRow(2, pxr::GfVec4d(basis.get_column(2).x, basis.get_column(2).y, basis.get_column(2).z, 0.0));
+            matrix.SetRow(3, pxr::GfVec4d(origin.x, origin.y, origin.z, 1.0));
+            
+            // Add a transform op
+            pxr::UsdGeomXformOp transformOp = xform.AddTransformOp();
+            transformOp.Set(matrix);
+            
+            UtilityFunctions::print("USD Export: Set transform for ", node_name);
+        }
+        
+        // Check if it's a MeshInstance3D
+        if (p_node->is_class("MeshInstance3D")) {
+            MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
+            if (mesh_instance) {
+                // Get the mesh
+                Ref<Mesh> mesh = mesh_instance->get_mesh();
+                if (mesh.is_valid()) {
+                    // Create a path for the mesh
+                    pxr::SdfPath mesh_path = node_path.AppendChild(pxr::TfToken("Mesh"));
+                    
+                    // Use the mesh export helper to convert the Godot mesh to a USD prim
+                    UsdMeshExportHelper mesh_helper;
+                    pxr::UsdPrim mesh_prim = mesh_helper.export_mesh_to_prim(mesh, p_stage, mesh_path);
+                    
+                    if (mesh_prim) {
+                        UtilityFunctions::print("USD Export: Exported mesh for ", node_name);
+                    } else {
+                        UtilityFunctions::printerr("USD Export: Failed to export mesh for ", node_name);
+                    }
+                }
+            }
+        }
+        
+        // Process children
+        for (int i = 0; i < p_node->get_child_count(); i++) {
+            Node *child = p_node->get_child(i);
+            _convert_node_to_prim(child, p_stage, node_path, p_state);
+        }
+    } else {
+        UtilityFunctions::print("USD Export: Skipping non-Node3D node: ", node_name);
+        
+        // Process children even for non-Node3D nodes
+        for (int i = 0; i < p_node->get_child_count(); i++) {
+            Node *child = p_node->get_child(i);
+            _convert_node_to_prim(child, p_stage, p_parent_path, p_state);
+        }
+    }
 }
 
 Error UsdDocument::write_to_filesystem(Ref<UsdState> p_state, const String &p_path) {
