@@ -47,7 +47,7 @@ Ref<Mesh> UsdMeshImportHelper::import_mesh_from_prim(const pxr::UsdPrim& p_prim)
     }
 
     // Fallback for unsupported primitive types
-    UtilityFunctions::printerr("USD Import: Unsupported primitive type");
+    //UtilityFunctions::printerr("USD Import: Unsupported primitive type");
     return Ref<Mesh>();
 }
 
@@ -62,9 +62,9 @@ Ref<BoxMesh> UsdMeshImportHelper::import_cube(const UsdPrim &p_prim) {
         UsdAttribute sizeAttr = usdCube.GetSizeAttr();
         if (sizeAttr) {
             sizeAttr.Get(&size);
-            UtilityFunctions::print("USD Import: Cube size from USD: ", size);
+            //UtilityFunctions::print("USD Import: Cube size from USD: ", size);
         } else {
-            UtilityFunctions::print("USD Import: No size attribute found for cube, using default size");
+            //UtilityFunctions::print("USD Import: No size attribute found for cube, using default size");
         }
     }
     
@@ -121,8 +121,7 @@ Ref<SphereMesh> UsdMeshImportHelper::import_sphere(const pxr::UsdGeomSphere& p_s
     sphere_mesh->set_radius(radius);
     sphere_mesh->set_height(radius * 2.0); // Height is diameter in Godot
 
-    UtilityFunctions::print("USD Import: Imported sphere with radius ", radius);
-    
+    //UtilityFunctions::print("USD Import: Imported sphere with radius ", radius);
     return sphere_mesh;
 }
 
@@ -142,8 +141,7 @@ Ref<CylinderMesh> UsdMeshImportHelper::import_cylinder(const pxr::UsdGeomCylinde
     cylinder_mesh->set_bottom_radius(radius);
     cylinder_mesh->set_height(height);
 
-    UtilityFunctions::print("USD Import: Imported cylinder with radius ", radius, " and height ", height);
-    
+    //UtilityFunctions::print("USD Import: Imported cylinder with radius ", radius, " and height ", height);
     return cylinder_mesh;
 }
 
@@ -163,8 +161,7 @@ Ref<CylinderMesh> UsdMeshImportHelper::import_cone(const pxr::UsdGeomCone& p_con
     cone_mesh->set_bottom_radius(radius);
     cone_mesh->set_height(height);
 
-    UtilityFunctions::print("USD Import: Imported cone with radius ", radius, " and height ", height);
-    
+    //UtilityFunctions::print("USD Import: Imported cone with radius ", radius, " and height ", height);
     return cone_mesh;
 }
 
@@ -183,8 +180,7 @@ Ref<CapsuleMesh> UsdMeshImportHelper::import_capsule(const pxr::UsdGeomCapsule& 
     capsule_mesh->set_radius(radius);
     capsule_mesh->set_height(height);
 
-    UtilityFunctions::print("USD Import: Imported capsule with radius ", radius, " and height ", height);
-    
+    //UtilityFunctions::print("USD Import: Imported capsule with radius ", radius, " and height ", height);
     return capsule_mesh;
 }
 

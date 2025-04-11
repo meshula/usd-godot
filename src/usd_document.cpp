@@ -59,7 +59,7 @@ Error UsdDocument::append_from_scene(Node *p_scene_root, Ref<UsdState> p_state, 
         return ERR_INVALID_PARAMETER;
     }
     
-    UtilityFunctions::print("USD Export: Appending scene ", p_scene_root->get_name(), " to USD document");
+    //UtilityFunctions::print("USD Export: Appending scene ", p_scene_root->get_name(), " to USD document");
     
     try {
         // Create a new USD stage in memory
@@ -143,7 +143,7 @@ void UsdDocument::_convert_node_to_prim(Node *p_node, pxr::UsdStageRefPtr p_stag
             pxr::UsdGeomXformOp transformOp = xform.AddTransformOp();
             transformOp.Set(matrix);
             
-            UtilityFunctions::print("USD Export: Set transform for ", node_name);
+            //UtilityFunctions::print("USD Export: Set transform for ", node_name);
         }
         
         // Check if it's a MeshInstance3D
@@ -339,9 +339,9 @@ Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, co
         
         if (mesh.is_valid()) {
             mesh_instance->set_mesh(mesh);
-            UtilityFunctions::print("USD Import: Imported mesh for ", String(prim.GetName().GetString().c_str()));
+            //UtilityFunctions::print("USD Import: Imported mesh for ", String(prim.GetName().GetString().c_str()));
         } else {
-            UtilityFunctions::printerr("USD Import: Failed to import mesh for ", String(prim.GetName().GetString().c_str()));
+            //UtilityFunctions::printerr("USD Import: Failed to import mesh for ", String(prim.GetName().GetString().c_str()));
         }
     } else if (prim.IsA<pxr::UsdGeomCamera>()) {
         // Create a camera for camera prims
@@ -367,7 +367,7 @@ Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, co
         // Set the FOV
         camera->set_fov(fov);
         
-        UtilityFunctions::print("USD Import: Imported camera for ", String(prim.GetName().GetString().c_str()));
+        //UtilityFunctions::print("USD Import: Imported camera for ", String(prim.GetName().GetString().c_str()));
     } else if (prim.IsA<pxr::UsdLuxSphereLight>()) {
         // Create a light for light prims
         Light3D *light = memnew(Light3D);
@@ -378,7 +378,7 @@ Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, co
         // Set light properties
         // This is a placeholder for now
         
-        UtilityFunctions::print("USD Import: Imported light for ", String(prim.GetName().GetString().c_str()));
+        //UtilityFunctions::print("USD Import: Imported light for ", String(prim.GetName().GetString().c_str()));
     }
     
     // Process children

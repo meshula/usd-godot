@@ -93,7 +93,7 @@ void USDPlugin::_enter_tree() {
 
     std::vector<std::string> pluginPaths;
     std::string pluginPath = project_root.utf8().get_data();
-    pluginPaths.push_back(std::string(pluginPath + "lib/lib/usd"));
+    pluginPaths.push_back(std::string(pluginPath + "lib/usd"));
     pluginPaths.push_back(std::string(pluginPath + "lib/plugin"));
 
 
@@ -379,7 +379,7 @@ void USDPlugin::_import_usd_file(const String &p_file_path) {
         
         // Print the prim hierarchy (for debugging)
         UtilityFunctions::print("USD Import: Prim hierarchy:");
-        _print_prim_hierarchy(defaultPrim, 0);
+        //_print_prim_hierarchy(defaultPrim, 0);
         
         // Create a root node for the imported scene
         Node3D *root = memnew(Node3D);
@@ -390,8 +390,8 @@ void USDPlugin::_import_usd_file(const String &p_file_path) {
         _convert_prim_to_node(defaultPrim, root, root);
         
         // Print the node hierarchy for debugging
-        UtilityFunctions::print("USD Import: Node hierarchy before packing:");
-        _print_node_hierarchy(root, 0);
+        //UtilityFunctions::print("USD Import: Node hierarchy before packing:");
+        //_print_node_hierarchy(root, 0);
         
         // Create a scene with the root node
         Ref<PackedScene> scene;
@@ -437,7 +437,7 @@ bool USDPlugin::_apply_transform_from_usd_prim(const UsdPrim &p_prim, Node3D *p_
     std::vector<UsdGeomXformOp> xform_ops = usdXform.GetOrderedXformOps(&reset_xform_stack);
     
     if (xform_ops.empty()) {
-        UtilityFunctions::print("USD Import: No transform found for node: ", p_node->get_name());
+        //UtilityFunctions::print("USD Import: No transform found for node: ", p_node->get_name());
         return false;
     }
     
@@ -523,20 +523,19 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
         
         UsdMeshImportHelper helper;
         Ref<Mesh> box_mesh = helper.import_mesh_from_prim(p_prim);
+        if (box_mesh.is_valid()) {
+            mesh_instance->set_mesh(box_mesh);
+            auto mat = helper.create_material(p_prim);
+                        
+            // Apply the material to the mesh
+            if (mat.is_valid()) {
+                mesh_instance->set_surface_override_material(0, mat);
+            }
 
-        mesh_instance->set_mesh(box_mesh);
-        auto mat = helper.create_material(p_prim);
-                    
-        // Apply the material to the mesh
-        if (mat.is_valid()) {
-            mesh_instance->set_surface_override_material(0, mat);
-        }
-
-        // Apply transform from USD prim
-        _apply_transform_from_usd_prim(p_prim, mesh_instance);
-        
+            // Apply transform from USD prim
+            _apply_transform_from_usd_prim(p_prim, mesh_instance);
+        }        
         //UtilityFunctions::print("USD Import: Created ", prim_type, " node: ", prim_name);
-        
         node = mesh_instance;
     } else {
         // For empty or unknown prim types, create a Node3D
@@ -547,7 +546,7 @@ Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, No
         // Apply transform from USD prim
         _apply_transform_from_usd_prim(p_prim, generic);
         
-        UtilityFunctions::print("USD Import: Created generic node for type: ", prim_type, " prim: ", prim_name);
+        //UtilityFunctions::print("USD Import: Created generic node for type: ", prim_type, " prim: ", prim_name);
         node = generic;
     }
     

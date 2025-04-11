@@ -48,17 +48,23 @@ fi
 echo "=== Building TBB (Threading Building Blocks) ==="
 cd ${USD_DEPS_DIR}
 
+TBB_TAG="2022.1.0"
+TBB_ZIP="oneTBB-v${TBB_TAG}.zip"
+TBB_DIR="oneTBB-${TBB_TAG}"
+TARGET_DIR="oneTBB"
+
 # Download and extract TBB if not already done
-if [ ! -d "oneTBB" ]; then
-    echo "Downloading TBB..."
-    curl -L https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.9.0.zip --output oneTBB-2021.9.0.zip
-    unzip oneTBB-2021.9.0.zip && mv oneTBB-2021.9.0/ oneTBB
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "Downloading TBB version ${TBB_TAG}..."
+    curl -L "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v${TBB_TAG}.zip" --output "$TBB_ZIP"
+    unzip "$TBB_ZIP"
+    mv "$TBB_DIR" "$TARGET_DIR"
 fi
 
 # Build TBB if not already built
 if [ ! -f "${USD_DEPS_DIR}/install/lib/libtbb.a" ] && [ ! -f "${USD_DEPS_DIR}/install/lib/libtbb.dylib" ] && [ ! -f "${USD_DEPS_DIR}/install/lib/libtbb.so" ]; then
     echo "Building TBB..."
-    cd oneTBB && mkdir -p build && cd build
+    cd "$TARGET_DIR" && mkdir -p build && cd build
     cmake .. -DTBB_TEST=OFF -DTBB_STRICT=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${USD_DEPS_DIR}/install
     cmake --build . --config Release && cmake --install .
     cd ${USD_DEPS_DIR}

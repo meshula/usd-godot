@@ -77,7 +77,7 @@ pxr::UsdGeomCube UsdMeshExportHelper::export_box(const Ref<BoxMesh> p_box, pxr::
         pxr::UsdGeomXformOp scaleOp = cube.AddScaleOp();
         scaleOp.Set(pxr::GfVec3d(1.0, scale_y, scale_z));
         
-        UtilityFunctions::print("USD Export: Applied non-uniform scale (1.0, ", scale_y, ", ", scale_z, ") to cube");
+        //UtilityFunctions::print("USD Export: Applied non-uniform scale (1.0, ", scale_y, ", ", scale_z, ") to cube");
     }
     
     // Check if the box mesh has a material with a color
@@ -101,11 +101,11 @@ pxr::UsdGeomCube UsdMeshExportHelper::export_box(const Ref<BoxMesh> p_box, pxr::
             // Set the color space metadata to linear
             displayColorAttr.SetColorSpace(pxr::TfToken("linear"));
             
-            UtilityFunctions::print("USD Export: Applied material color (", color.r, ", ", color.g, ", ", color.b, ") to cube");
+            //UtilityFunctions::print("USD Export: Applied material color (", color.r, ", ", color.g, ", ", color.b, ") to cube");
         }
     }
     
-    UtilityFunctions::print("USD Export: Exported box with size ", size);
+    //UtilityFunctions::print("USD Export: Exported box with size ", size);
     
     return cube;
 }
@@ -120,8 +120,7 @@ pxr::UsdGeomSphere UsdMeshExportHelper::export_sphere(const Ref<SphereMesh> p_sp
     // Set the radius
     sphere.GetRadiusAttr().Set(radius);
     
-    UtilityFunctions::print("USD Export: Exported sphere with radius ", radius);
-    
+    //UtilityFunctions::print("USD Export: Exported sphere with radius ", radius);
     return sphere;
 }
 
@@ -142,7 +141,7 @@ pxr::UsdGeomCylinder UsdMeshExportHelper::export_cylinder(const Ref<CylinderMesh
         UtilityFunctions::print("USD Export: Warning - USD cylinders don't support different top and bottom radii. Using bottom radius.");
     }
     
-    UtilityFunctions::print("USD Export: Exported cylinder with radius ", radius, " and height ", height);
+    //UtilityFunctions::print("USD Export: Exported cylinder with radius ", radius, " and height ", height);
     
     return cylinder;
 }
@@ -159,8 +158,7 @@ pxr::UsdGeomCone UsdMeshExportHelper::export_cone(const Ref<CylinderMesh> p_cone
     cone.GetRadiusAttr().Set(radius);
     cone.GetHeightAttr().Set(height);
     
-    UtilityFunctions::print("USD Export: Exported cone with radius ", radius, " and height ", height);
-    
+    //UtilityFunctions::print("USD Export: Exported cone with radius ", radius, " and height ", height);
     return cone;
 }
 
@@ -176,8 +174,7 @@ pxr::UsdGeomCapsule UsdMeshExportHelper::export_capsule(const Ref<CapsuleMesh> p
     capsule.GetRadiusAttr().Set(radius);
     capsule.GetHeightAttr().Set(height);
     
-    UtilityFunctions::print("USD Export: Exported capsule with radius ", radius, " and height ", height);
-    
+    //UtilityFunctions::print("USD Export: Exported capsule with radius ", radius, " and height ", height);
     return capsule;
 }
 
@@ -331,8 +328,7 @@ pxr::UsdGeomMesh UsdMeshExportHelper::export_geom_mesh(const Ref<Mesh> p_mesh, p
         st_interp_attr.Set(pxr::UsdGeomTokens->vertex);
     }
     
-    UtilityFunctions::print("USD Export: Exported mesh with ", vertices.size(), " vertices and ", (has_indices ? indices.size() / 3 : vertices.size() / 3), " triangles");
-    
+    //UtilityFunctions::print("USD Export: Exported mesh with ", vertices.size(), " vertices and ", (has_indices ? indices.size() / 3 : vertices.size() / 3), " triangles");
     return mesh;
 }
 
