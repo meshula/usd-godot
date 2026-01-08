@@ -1,6 +1,6 @@
 # Godot-USD Integration
 
-A plugin that integrates Universal Scene Description (USD) into the Godot Engine, enabling powerful scene description capabilities while maintaining Godot's real-time interactive features.
+A GDExtension plugin that integrates Universal Scene Description (USD) into the Godot Engine, enabling import/export of USD assets and direct stage manipulation from GDScript.
 
 ## Overview
 
@@ -9,39 +9,25 @@ This project bridges two powerful but fundamentally different approaches to scen
 - **Godot** uses a scene tree of nodes with class inheritance and real-time signaling
 - **USD** uses composition of typed schemas across layers with non-destructive workflows
 
-The integration leverages USD's Hydra rendering system with Scene Index Filters (SIFs) as an intermediary layer, allowing Godot to function as a render delegate.
+The plugin provides:
+- **UsdStageProxy** - GDScript wrapper for USD stages
+- **UsdPrimProxy** - GDScript wrapper for USD prims with automatic type conversion
+- **UsdDocument** - Import/export between USD files and Godot scenes
 
 ## Key Features
 
-- Import and export USD assets directly in Godot
-- Non-destructive editing with USD's layer-based workflows
-- Real-time visualization of complex USD scenes
-- Bidirectional property editing between USD and Godot
+- Import USD assets (.usd, .usda, .usdc) directly into Godot scenes
+- Export Godot scenes to USD format
+- Direct USD stage manipulation from GDScript
+- Automatic type conversion between USD and Godot types
 - Support for USD variants, references, and payloads
-- Maintain USD identity across reloads and updates
+- Transform and attribute access with proper coordinate system handling
 
-## Architecture
-
-The implementation consists of these primary components:
-
-1. **OpenUSD Integration Plugin**: C++ plugin that embeds USD libraries in Godot
-2. **Scene Index Bridge**: Synchronizes between USD's scene representation and Godot's scene tree 
-3. **Godot Render Delegate**: Implements Hydra's render delegate interface for Godot
-4. **Editor Extensions**: UI components for USD asset handling and editing
-5. **Scripting Interface**: GDScript/C# API for USD interaction
-
-The key insight is using **Scene Index Filters (SIFs)** as an abstraction layer:
-
-- USD scene data flows through Hydra's Scene Index
-- Godot references scene elements by path rather than direct USD object references
-- A dedicated USD thread isolates USD's memory management and threading model
-- Communication happens via message passing rather than shared memory
-
-## Getting Started
+## Quick Start
 
 ### Prerequisites
 
-- Godot Engine 4.x
+- Godot Engine 4.2+
 - OpenUSD libraries (see [Building a Minimal USD](docs/embeddingUSD.md))
 - C++17 compatible compiler
 
@@ -49,30 +35,99 @@ The key insight is using **Scene Index Filters (SIFs)** as an abstraction layer:
 
 1. Clone this repository
 2. Build the plugin following the instructions in [Building the Plugin](docs/building.md)
-3. Add the plugin to your Godot project
+3. Copy `addons/godot-usd` to your Godot project
+4. Enable the plugin in Project Settings > Plugins
 
-### Basic Usage
+### GDScript API
 
 ```gdscript
-# Open a USD stage
-var stage = UsdStage.new()
-stage.open("res://assets/scene.usd")
+# Open and explore a USD stage
+var stage = UsdStageProxy.new()
+stage.open("res://assets/scene.usda")
 
-# Access USD prims
-var root_prim = stage.get_default_prim()
-var mesh_prim = stage.get_prim_at_path("/World/Mesh")
+# Get the default prim
+var root = stage.get_default_prim()
+print("Root prim: ", root.get_name())
 
-# Switch variants
-if root_prim.has_variant_set("modelingVariant"):
-    root_prim.set_variant_selection("modelingVariant", "detailed")
+# Access prims by path
+var mesh = stage.get_prim_at_path("/World/MyMesh")
+if mesh:
+    print("Type: ", mesh.get_type_name())
+    print("Position: ", mesh.get_local_transform().origin)
+
+# Read and write attributes
+var cube = stage.get_prim_at_path("/World/Cube")
+var size = cube.get_attribute("size")
+cube.set_attribute("size", 2.0)
+
+# Work with variants
+if root.has_variant_set("LOD"):
+    root.set_variant_selection("LOD", "high")
+    print("Current LOD: ", root.get_variant_selection("LOD"))
+
+# Traverse all prims
+for prim in stage.traverse():
+    print(prim.get_path(), " -> ", prim.get_type_name())
+
+# Create new USD content
+var new_stage = UsdStageProxy.new()
+new_stage.create_new("res://output/new_scene.usda")
+var xform = new_stage.define_prim("/Root", "Xform")
+var child = new_stage.define_prim("/Root/MyCube", "Cube")
+child.set_attribute("size", 1.5)
+new_stage.save()
+```
+
+### Import USD to Godot Scene
+
+```gdscript
+var doc = UsdDocument.new()
+var state = UsdState.new()
+var parent = Node3D.new()
+add_child(parent)
+
+var err = doc.import_from_file("res://assets/model.usda", parent, state)
+if err == OK:
+    print("Import successful!")
+```
+
+## Running Tests
+
+The project uses the GUT (Godot Unit Test) framework for testing:
+
+```bash
+./run_tests.sh              # Run all tests
+./run_tests.sh -v           # Verbose output
+./run_tests.sh test_name    # Run specific test file
 ```
 
 ## Documentation
 
-- [Technical Design Document](docs/technical-design-doc.md)
-- [Embedding USD Guide](docs/embeddingUSD.md)
-- [Scene Index Filter Bridge](docs/sif-bridge-doc.md)
-- [System Correspondences](docs/correspondences-doc.md)
+- [GDScript API Reference](docs/api-reference.md) - Complete API documentation for all classes
+- [Building the Plugin](docs/building.md) - Build instructions and requirements
+- [CLI Development Workflow](docs/cli-development.md) - Testing and debugging with command line
+- [Embedding USD Guide](docs/embeddingUSD.md) - How USD is integrated and plugin registration
+- [Technical Design Document](docs/technical-design-doc.md) - Architecture and design decisions
+- [System Correspondences](docs/correspondences-doc.md) - USD to Godot type mappings
+
+## Project Structure
+
+```
+godot-usd/
+├── src/                    # C++ source files
+│   ├── usd_stage_proxy.*   # UsdStageProxy implementation
+│   ├── usd_prim_proxy.*    # UsdPrimProxy implementation
+│   ├── usd_document.*      # Import/export implementation
+│   └── register_types.cpp  # GDExtension registration
+├── lib/                    # Built libraries and USD plugins
+│   ├── libgodot-usd.dylib  # GDExtension library
+│   └── usd/                # USD plugin resources (required!)
+├── addons/godot-usd/       # Godot addon structure
+├── tests/                  # GUT test suite
+│   ├── unit/               # Unit tests
+│   └── fixtures/           # Test USD files
+└── docs/                   # Documentation
+```
 
 ## Contributing
 

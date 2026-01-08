@@ -188,7 +188,70 @@ When integrating with your application or game engine, you'll need to:
 
 1. Add the USD include directories to your build path
 2. Link against the USD static libraries
-3. Copy necessary USD plugin resources ~ where to place these will be specific to your application architecture
+3. Copy necessary USD plugin resources
+4. **Register USD plugins programmatically** (critical for static builds!)
+
+### USD Plugin Registration
+
+When USD is built as a static library and embedded in another application (like a GDExtension), USD's automatic plugin discovery mechanism fails. This is because USD's `initConfig.cpp` uses `ArchGetExecutablePath()` to determine the base path for relative plugin paths when `ArchGetAddressInfo()` fails (which it does for static builds).
+
+The solution is to call `PlugRegistry::GetInstance().RegisterPlugins(path)` programmatically during your extension's initialization:
+
+```cpp
+#include <pxr/base/plug/registry.h>
+#include <pxr/base/plug/plugin.h>
+#include <pxr/base/arch/symbols.h>
+
+// Get the path to your library using ArchGetAddressInfo
+std::string libraryPath;
+if (ArchGetAddressInfo(reinterpret_cast<void*>(&your_function),
+                        &libraryPath, nullptr, nullptr, nullptr)) {
+    // Extract directory from library path
+    size_t lastSlash = libraryPath.rfind('/');
+    std::string libDir = libraryPath.substr(0, lastSlash);
+
+    // USD plugins are in lib/usd relative to the library
+    std::string pluginPath = libDir + "/usd";
+
+    // Register plugins with USD
+    pxr::PlugPluginPtrVector plugins =
+        pxr::PlugRegistry::GetInstance().RegisterPlugins(pluginPath);
+}
+```
+
+The USD plugin resources directory structure should look like:
+
+```
+lib/
+├── libgodot-usd.dylib      # Your library
+└── usd/                     # USD plugin resources
+    ├── plugInfo.json        # Top-level with "Includes": ["*/resources/"]
+    ├── ar/
+    │   └── resources/
+    │       └── plugInfo.json
+    ├── sdf/
+    │   └── resources/
+    │       └── plugInfo.json
+    ├── usd/
+    │   └── resources/
+    │       └── plugInfo.json
+    └── ... (other USD modules)
+```
+
+Copy these from `${USD_INSTALL_DIR}/lib/usd/` after building USD.
+
+### Debugging Plugin Discovery
+
+USD provides TF_DEBUG flags to troubleshoot plugin loading:
+
+```bash
+TF_DEBUG="PLUG_REGISTRATION,PLUG_INFO_SEARCH" ./your_application
+```
+
+This will show:
+- Which paths USD is searching for plugins
+- Which plugInfo.json files are being parsed
+- Which plugins are being registered
 
 For engine plugins or extensions, you would include these paths in your build configuration file (e.g., `CMakeLists.txt`, `SConstruct`, `premake5.lua`, etc.).
 

@@ -89,6 +89,10 @@ set(SOURCES
     src/usd_mesh_import_helper.h
     src/usd_mesh_export_helper.cpp
     src/usd_mesh_export_helper.h
+    src/usd_stage_proxy.cpp
+    src/usd_stage_proxy.h
+    src/usd_prim_proxy.cpp
+    src/usd_prim_proxy.h
 )
 
 # Create the shared library

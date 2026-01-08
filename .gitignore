@@ -27,7 +27,6 @@ export_presets.cfg
 *.gen.*
 
 # Build directories
-addons/
 build/
 build-usd/
 bin/
@@ -52,10 +51,10 @@ Makefile
 .DS_Store
 Thumbs.db
 
-# USD related
-*.usd
-*.usda
-*.usdc
+# USD related (allow test fixtures)
+# *.usd
+# *.usda
+# *.usdc
 *.usdz
 *.usdnc
 *.usdt

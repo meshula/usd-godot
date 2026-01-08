@@ -209,6 +209,40 @@ addons/godot-usd/
 └── plugin.gd
 ```
 
+## Critical: USD Plugin Resources
+
+**IMPORTANT**: The plugin requires USD's plugin resources to function correctly. After building, you must copy the USD plugin directory from your USD installation:
+
+```bash
+# Copy USD plugin resources to your lib directory
+cp -R ${USD_INSTALL_DIR}/lib/usd lib/
+```
+
+Your final lib directory structure should look like:
+
+```
+lib/
+├── libgodot-usd.dylib     # Your built GDExtension library
+└── usd/                    # USD plugin resources (required!)
+    ├── plugInfo.json       # Top-level with "Includes": ["*/resources/"]
+    ├── ar/
+    │   └── resources/
+    │       └── plugInfo.json
+    ├── sdf/
+    │   └── resources/
+    │       └── plugInfo.json
+    ├── usd/
+    │   └── resources/
+    │       └── plugInfo.json
+    └── ... (other USD modules)
+```
+
+Without these plugin resources, USD will fail to initialize with errors like:
+- "Failed to find registered plugin for type 'ArDefaultResolver'"
+- "Failed to create default resolver"
+
+See [Embedding USD](embeddingUSD.md#usd-plugin-registration) for technical details on why this is necessary for static USD builds.
+
 ## Using the Plugin
 
 1. Copy the entire `addons/godot-usd` directory to your Godot project

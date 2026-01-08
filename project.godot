@@ -1,0 +1,28 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="USD-Godot"
+config/features=PackedStringArray("4.2", "Forward Plus")
+
+[autoload]
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot-usd/plugin.cfg", "res://addons/gut/plugin.cfg")
+
+[filesystem]
+
+import/blender/enabled=false
+
+[physics]
+
+common/enable_pause_aware_picking=true

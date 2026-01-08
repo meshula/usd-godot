@@ -1,0 +1,16 @@
+{
+    "dirs": ["res://tests/unit"],
+    "double_strategy": "partial",
+    "ignore_pause": true,
+    "include_subdirs": true,
+    "inner_class": "",
+    "log_level": 1,
+    "opacity": 100,
+    "prefix": "test_",
+    "selected": "",
+    "should_exit": true,
+    "should_exit_on_success": true,
+    "should_maximize": false,
+    "suffix": ".gd",
+    "unit_test_name": ""
+}

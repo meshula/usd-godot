@@ -4,6 +4,7 @@
 #include "usd_mesh_export_helper.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/mesh.hpp>
@@ -243,10 +244,16 @@ Error UsdDocument::import_from_file(const String &p_path, Node *p_parent, Ref<Us
     }
     
     UtilityFunctions::print("USD Import: Importing USD file ", p_path);
-    
+
+    // Convert Godot path to filesystem path
+    String abs_path = p_path;
+    if (p_path.begins_with("res://") || p_path.begins_with("user://")) {
+        abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
+    }
+
     try {
         // Open the USD stage
-        pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(p_path.utf8().get_data());
+        pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(abs_path.utf8().get_data());
         if (!stage) {
             UtilityFunctions::printerr("USD Import: Failed to open USD stage");
             return ERR_CANT_OPEN;
@@ -292,95 +299,85 @@ Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, co
         return OK;
     }
     
-    // Create a new Node3D for this prim
-    Node3D *node = memnew(Node3D);
-    node->set_name(String(prim.GetName().GetString().c_str()));
+    // Create the appropriate node type for this prim
+    Node3D *node = nullptr;
+    String prim_name = String(prim.GetName().GetString().c_str());
+
+    // Handle specific prim types - create the right node type directly
+    if (prim.IsA<pxr::UsdGeomGprim>()) {
+        // Create a MeshInstance3D directly for geometric primitives
+        MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+        mesh_instance->set_name(prim_name);
+
+        // Use the mesh import helper to convert the USD prim to a Godot mesh
+        UsdMeshImportHelper mesh_helper;
+        Ref<Mesh> mesh = mesh_helper.import_mesh_from_prim(prim);
+
+        if (mesh.is_valid()) {
+            mesh_instance->set_mesh(mesh);
+        }
+
+        node = mesh_instance;
+    } else if (prim.IsA<pxr::UsdGeomCamera>()) {
+        // Create a Camera3D directly for camera prims
+        Camera3D *camera = memnew(Camera3D);
+        camera->set_name(prim_name);
+
+        // Set camera properties
+        pxr::UsdGeomCamera usd_camera(prim);
+
+        // Get the focal length
+        float focal_length = 50.0f; // Default focal length (in mm)
+        usd_camera.GetFocalLengthAttr().Get(&focal_length);
+
+        // Get the horizontal aperture
+        float horizontal_aperture = 24.0f; // Default horizontal aperture (in mm)
+        usd_camera.GetHorizontalApertureAttr().Get(&horizontal_aperture);
+
+        // Convert focal length to FOV (approximation)
+        float fov = 2.0f * atan(horizontal_aperture / (2.0f * focal_length)) * (180.0f / M_PI);
+
+        // Set the FOV
+        camera->set_fov(fov);
+
+        node = camera;
+    } else {
+        // Default: create a Node3D for other prim types (Xform, etc.)
+        node = memnew(Node3D);
+        node->set_name(prim_name);
+    }
+
+    // Add the node to the parent and set ownership
     p_parent->add_child(node);
     node->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
-    
-    // Set the transform
+
+    // Set the transform if the prim is transformable
     if (prim.IsA<pxr::UsdGeomXformable>()) {
         pxr::UsdGeomXformable xformable(prim);
-        
+
         // Get the local transform matrix
         pxr::GfMatrix4d matrix;
         bool reset_xform_stack;
         xformable.GetLocalTransformation(&matrix, &reset_xform_stack);
-        
+
         // Convert USD matrix to Godot transform
         Transform3D transform;
-        
+
         // Extract basis (rotation and scale)
         Basis basis;
         basis.set_column(0, Vector3(matrix[0][0], matrix[0][1], matrix[0][2]));
         basis.set_column(1, Vector3(matrix[1][0], matrix[1][1], matrix[1][2]));
         basis.set_column(2, Vector3(matrix[2][0], matrix[2][1], matrix[2][2]));
-        
+
         // Extract translation
         Vector3 origin(matrix[3][0], matrix[3][1], matrix[3][2]);
-        
+
         // Set the transform
         transform.set_basis(basis);
         transform.set_origin(origin);
         node->set_transform(transform);
     }
-    
-    // Handle specific prim types
-    if (prim.IsA<pxr::UsdGeomGprim>()) {
-        // Create a mesh instance for geometric primitives
-        MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
-        mesh_instance->set_name("MeshInstance3D");
-        node->add_child(mesh_instance);
-        mesh_instance->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
-        
-        // Use the mesh import helper to convert the USD prim to a Godot mesh
-        UsdMeshImportHelper mesh_helper;
-        Ref<Mesh> mesh = mesh_helper.import_mesh_from_prim(prim);
-        
-        if (mesh.is_valid()) {
-            mesh_instance->set_mesh(mesh);
-            //UtilityFunctions::print("USD Import: Imported mesh for ", String(prim.GetName().GetString().c_str()));
-        } else {
-            //UtilityFunctions::printerr("USD Import: Failed to import mesh for ", String(prim.GetName().GetString().c_str()));
-        }
-    } else if (prim.IsA<pxr::UsdGeomCamera>()) {
-        // Create a camera for camera prims
-        Camera3D *camera = memnew(Camera3D);
-        camera->set_name("Camera3D");
-        node->add_child(camera);
-        camera->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
-        
-        // Set camera properties
-        pxr::UsdGeomCamera usd_camera(prim);
-        
-        // Get the focal length
-        float focal_length = 50.0f; // Default focal length (in mm)
-        usd_camera.GetFocalLengthAttr().Get(&focal_length);
-        
-        // Get the horizontal aperture
-        float horizontal_aperture = 24.0f; // Default horizontal aperture (in mm)
-        usd_camera.GetHorizontalApertureAttr().Get(&horizontal_aperture);
-        
-        // Convert focal length to FOV (approximation)
-        float fov = 2.0f * atan(horizontal_aperture / (2.0f * focal_length)) * (180.0f / M_PI);
-        
-        // Set the FOV
-        camera->set_fov(fov);
-        
-        //UtilityFunctions::print("USD Import: Imported camera for ", String(prim.GetName().GetString().c_str()));
-    } else if (prim.IsA<pxr::UsdLuxSphereLight>()) {
-        // Create a light for light prims
-        Light3D *light = memnew(Light3D);
-        light->set_name("Light3D");
-        node->add_child(light);
-        light->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
-        
-        // Set light properties
-        // This is a placeholder for now
-        
-        //UtilityFunctions::print("USD Import: Imported light for ", String(prim.GetName().GetString().c_str()));
-    }
-    
+
     // Process children
     for (const pxr::UsdPrim &child : prim.GetChildren()) {
         Error err = _import_prim_hierarchy(p_stage, child.GetPath(), node, p_state);
@@ -388,7 +385,7 @@ Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, co
             return err;
         }
     }
-    
+
     return OK;
 }
 
