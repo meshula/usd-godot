@@ -5,7 +5,12 @@ project(godot-usd VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_INSTALL_RPATH "@loader_path")
+# Set RPATH for finding libraries at runtime
+if(APPLE)
+    set(CMAKE_INSTALL_RPATH "@loader_path")
+elseif(UNIX)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN")
+endif()
 
 # Set default build type if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -30,14 +35,34 @@ include(ExternalProject)
 # Set godot-cpp directories
 set(GODOT_CPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
 set(GODOT_CPP_BINARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
-set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.macos.template_release.universal.a")
+
+# Determine the correct godot-cpp library name based on platform
+if(APPLE)
+    set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.macos.template_release.universal.a")
+elseif(UNIX)
+    # Linux - detect architecture
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.linux.template_release.x86_64.a")
+    else()
+        set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.linux.template_release.x86_32.a")
+    endif()
+elseif(WIN32)
+    # Windows - detect architecture
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.windows.template_release.x86_64.a")
+    else()
+        set(GODOT_CPP_LIB "${GODOT_CPP_BINARY_DIR}/bin/libgodot-cpp.windows.template_release.x86_32.a")
+    endif()
+endif()
+
+message(STATUS "Expected godot-cpp library: ${GODOT_CPP_LIB}")
 
 # Check if godot-cpp is already cloned
 if(NOT EXISTS "${GODOT_CPP_SOURCE_DIR}")
     # Clone godot-cpp repository
     message(STATUS "Cloning godot-cpp repository...")
     execute_process(
-        COMMAND git clone --depth 1 --branch 4.2 https://github.com/godotengine/godot-cpp.git ${GODOT_CPP_SOURCE_DIR}
+        COMMAND git clone --depth 1 --branch godot-4.4-stable https://github.com/godotengine/godot-cpp.git ${GODOT_CPP_SOURCE_DIR}
         RESULT_VARIABLE GIT_RESULT
     )
     if(NOT GIT_RESULT EQUAL 0)
@@ -150,15 +175,25 @@ else()
     target_link_libraries(${PROJECT_NAME} PRIVATE godot-cpp godot_extension_interface usd)
 endif()
 
-# Set output directory and RPATH settings for macOS
+# Set output directory and RPATH settings
 set_target_properties(${PROJECT_NAME} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
-    INSTALL_RPATH "@loader_path"
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH_USE_LINK_PATH TRUE
-    MACOSX_RPATH TRUE
 )
+
+# Platform-specific RPATH settings
+if(APPLE)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        INSTALL_RPATH "@loader_path"
+        MACOSX_RPATH TRUE
+    )
+elseif(UNIX)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        INSTALL_RPATH "$ORIGIN"
+    )
+endif()
 
 # Installation
 install(TARGETS ${PROJECT_NAME}

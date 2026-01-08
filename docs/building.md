@@ -12,7 +12,12 @@ This guide provides instructions for building the Godot-USD integration plugin f
   - Clang 10+ (macOS)
   - MSVC 2019+ (Windows)
 - **Git**
-- **SCons** (for building godot-cpp)
+- **SCons** (for building godot-cpp) - Install via `pip install scons`
+- **Python 3** (required by SCons)
+
+### Godot Version
+
+This plugin requires **Godot 4.4+**. The build system automatically fetches the correct godot-cpp bindings (4.4-stable branch).
 
 ### Required Libraries
 

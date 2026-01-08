@@ -27,7 +27,7 @@ The plugin provides:
 
 ### Prerequisites
 
-- Godot Engine 4.2+
+- Godot Engine 4.4+ (tested with 4.4-stable)
 - OpenUSD libraries (see [Building a Minimal USD](docs/embeddingUSD.md))
 - C++17 compatible compiler
 
