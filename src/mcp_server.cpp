@@ -115,6 +115,18 @@ void McpServer::process_request(const std::string& request) {
     } else if (method == "usd/create_prim") {
         std::string response = handle_create_prim(id, request);
         send_response(response);
+    } else if (method == "usd/set_attribute") {
+        std::string response = handle_set_attribute(id, request);
+        send_response(response);
+    } else if (method == "usd/get_attribute") {
+        std::string response = handle_get_attribute(id, request);
+        send_response(response);
+    } else if (method == "usd/set_transform") {
+        std::string response = handle_set_transform(id, request);
+        send_response(response);
+    } else if (method == "usd/list_prims") {
+        std::string response = handle_list_prims(id, request);
+        send_response(response);
     } else {
         // Method not found
         send_error(id, -32601, "Method not found: " + method);
@@ -146,9 +158,64 @@ std::string McpServer::handle_initialize(const std::string& id) {
     // Protocol version
     result.set("protocolVersion", JsonValue::string("2024-11-05"));
 
-    // Capabilities
+    // Capabilities - declare that we support tools
     JsonValue capabilities = JsonValue::object();
-    // We'll add tool capabilities later
+
+    // Build tools array listing all USD commands
+    JsonValue tools_array = JsonValue::array();
+
+    // usd/create_stage
+    JsonValue tool1 = JsonValue::object();
+    tool1.set("name", JsonValue::string("usd/create_stage"));
+    tool1.set("description", JsonValue::string("Create a new USD stage (in-memory or file-based)"));
+    tools_array.push(tool1);
+
+    // usd/save_stage
+    JsonValue tool2 = JsonValue::object();
+    tool2.set("name", JsonValue::string("usd/save_stage"));
+    tool2.set("description", JsonValue::string("Save a USD stage to file"));
+    tools_array.push(tool2);
+
+    // usd/query_generation
+    JsonValue tool3 = JsonValue::object();
+    tool3.set("name", JsonValue::string("usd/query_generation"));
+    tool3.set("description", JsonValue::string("Query stage generation number (tracks modifications)"));
+    tools_array.push(tool3);
+
+    // usd/create_prim
+    JsonValue tool4 = JsonValue::object();
+    tool4.set("name", JsonValue::string("usd/create_prim"));
+    tool4.set("description", JsonValue::string("Create a prim with specified type"));
+    tools_array.push(tool4);
+
+    // usd/set_attribute
+    JsonValue tool5 = JsonValue::object();
+    tool5.set("name", JsonValue::string("usd/set_attribute"));
+    tool5.set("description", JsonValue::string("Set an attribute on a prim"));
+    tools_array.push(tool5);
+
+    // usd/get_attribute
+    JsonValue tool6 = JsonValue::object();
+    tool6.set("name", JsonValue::string("usd/get_attribute"));
+    tool6.set("description", JsonValue::string("Get an attribute value from a prim"));
+    tools_array.push(tool6);
+
+    // usd/set_transform
+    JsonValue tool7 = JsonValue::object();
+    tool7.set("name", JsonValue::string("usd/set_transform"));
+    tool7.set("description", JsonValue::string("Set transform (translation, rotation, scale) on a prim"));
+    tools_array.push(tool7);
+
+    // usd/list_prims
+    JsonValue tool8 = JsonValue::object();
+    tool8.set("name", JsonValue::string("usd/list_prims"));
+    tool8.set("description", JsonValue::string("List all prims in a stage"));
+    tools_array.push(tool8);
+
+    JsonValue tools_capability = JsonValue::object();
+    tools_capability.set("tools", tools_array);
+    capabilities.set("tools", tools_capability);
+
     result.set("capabilities", capabilities);
 
     // Server info
@@ -340,6 +407,46 @@ int64_t McpServer::extract_int_param(const std::string& request, const std::stri
     }
 }
 
+double McpServer::extract_double_param(const std::string& request, const std::string& param_name) {
+    // Look for "param_name":123.45 pattern
+    std::string search = "\"" + param_name + "\"";
+    size_t param_pos = request.find(search);
+    if (param_pos == std::string::npos) {
+        return 0.0;
+    }
+
+    size_t colon_pos = request.find(':', param_pos);
+    if (colon_pos == std::string::npos) {
+        return 0.0;
+    }
+
+    // Skip whitespace
+    size_t value_start = colon_pos + 1;
+    while (value_start < request.length() && std::isspace(request[value_start])) {
+        value_start++;
+    }
+
+    if (value_start >= request.length()) {
+        return 0.0;
+    }
+
+    // Parse number (including decimal point and scientific notation)
+    size_t value_end = value_start;
+    while (value_end < request.length() &&
+           (std::isdigit(request[value_end]) || request[value_end] == '.' ||
+            request[value_end] == '-' || request[value_end] == '+' ||
+            request[value_end] == 'e' || request[value_end] == 'E')) {
+        value_end++;
+    }
+
+    std::string value_str = request.substr(value_start, value_end - value_start);
+    try {
+        return std::stod(value_str);
+    } catch (...) {
+        return 0.0;
+    }
+}
+
 std::string McpServer::handle_create_stage(const std::string& id, const std::string& request) {
     // Extract parameters
     std::string file_path = extract_string_param(request, "file_path");
@@ -466,6 +573,204 @@ std::string McpServer::handle_create_prim(const std::string& id, const std::stri
 
     UtilityFunctions::print(String("MCP Server: Created prim ") + String(prim_path.c_str()) +
                            String(" in stage ") + String::num_int64(stage_id));
+
+    return response.to_string();
+}
+
+std::string McpServer::handle_set_attribute(const std::string& id, const std::string& request) {
+    // Extract parameters
+    int64_t stage_id = extract_int_param(request, "stage_id");
+    std::string prim_path = extract_string_param(request, "prim_path");
+    std::string attr_name = extract_string_param(request, "attr_name");
+    std::string value_type = extract_string_param(request, "value_type");
+    std::string value = extract_string_param(request, "value");
+
+    if (stage_id == 0) {
+        send_error(id, -32602, "Invalid stage_id parameter");
+        return "";
+    }
+
+    if (prim_path.empty()) {
+        send_error(id, -32602, "Missing prim_path parameter");
+        return "";
+    }
+
+    if (attr_name.empty()) {
+        send_error(id, -32602, "Missing attr_name parameter");
+        return "";
+    }
+
+    if (value_type.empty()) {
+        send_error(id, -32602, "Missing value_type parameter");
+        return "";
+    }
+
+    // Set attribute using stage manager
+    bool success = UsdStageManager::get_singleton().set_prim_attribute(
+        stage_id, prim_path, attr_name, value_type, value);
+
+    if (!success) {
+        send_error(id, -32000, "Failed to set attribute");
+        return "";
+    }
+
+    // Get updated generation
+    uint64_t generation = UsdStageManager::get_singleton().get_generation(stage_id);
+
+    // Build response
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    result.set("prim_path", JsonValue::string(prim_path));
+    result.set("attr_name", JsonValue::string(attr_name));
+    result.set("generation", JsonValue::number(static_cast<double>(generation)));
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    UtilityFunctions::print(String("MCP Server: Set attribute ") + String(attr_name.c_str()) +
+                           String(" on prim ") + String(prim_path.c_str()) +
+                           String(" in stage ") + String::num_int64(stage_id));
+
+    return response.to_string();
+}
+
+std::string McpServer::handle_get_attribute(const std::string& id, const std::string& request) {
+    // Extract parameters
+    int64_t stage_id = extract_int_param(request, "stage_id");
+    std::string prim_path = extract_string_param(request, "prim_path");
+    std::string attr_name = extract_string_param(request, "attr_name");
+
+    if (stage_id == 0) {
+        send_error(id, -32602, "Invalid stage_id parameter");
+        return "";
+    }
+
+    if (prim_path.empty()) {
+        send_error(id, -32602, "Missing prim_path parameter");
+        return "";
+    }
+
+    if (attr_name.empty()) {
+        send_error(id, -32602, "Missing attr_name parameter");
+        return "";
+    }
+
+    // Get attribute using stage manager
+    std::string value;
+    std::string value_type;
+    bool success = UsdStageManager::get_singleton().get_prim_attribute(
+        stage_id, prim_path, attr_name, value, value_type);
+
+    if (!success) {
+        send_error(id, -32000, "Failed to get attribute");
+        return "";
+    }
+
+    // Build response
+    JsonValue result = JsonValue::object();
+    result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    result.set("prim_path", JsonValue::string(prim_path));
+    result.set("attr_name", JsonValue::string(attr_name));
+    result.set("value", JsonValue::string(value));
+    result.set("value_type", JsonValue::string(value_type));
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    return response.to_string();
+}
+
+std::string McpServer::handle_set_transform(const std::string& id, const std::string& request) {
+    // Extract parameters
+    int64_t stage_id = extract_int_param(request, "stage_id");
+    std::string prim_path = extract_string_param(request, "prim_path");
+
+    // Extract transform components
+    double tx = extract_double_param(request, "tx");
+    double ty = extract_double_param(request, "ty");
+    double tz = extract_double_param(request, "tz");
+    double rx = extract_double_param(request, "rx");
+    double ry = extract_double_param(request, "ry");
+    double rz = extract_double_param(request, "rz");
+    double sx = extract_double_param(request, "sx");
+    double sy = extract_double_param(request, "sy");
+    double sz = extract_double_param(request, "sz");
+
+    if (stage_id == 0) {
+        send_error(id, -32602, "Invalid stage_id parameter");
+        return "";
+    }
+
+    if (prim_path.empty()) {
+        send_error(id, -32602, "Missing prim_path parameter");
+        return "";
+    }
+
+    // Set transform using stage manager
+    bool success = UsdStageManager::get_singleton().set_prim_transform(
+        stage_id, prim_path, tx, ty, tz, rx, ry, rz, sx, sy, sz);
+
+    if (!success) {
+        send_error(id, -32000, "Failed to set transform");
+        return "";
+    }
+
+    // Get updated generation
+    uint64_t generation = UsdStageManager::get_singleton().get_generation(stage_id);
+
+    // Build response
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    result.set("prim_path", JsonValue::string(prim_path));
+    result.set("generation", JsonValue::number(static_cast<double>(generation)));
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    UtilityFunctions::print(String("MCP Server: Set transform on prim ") + String(prim_path.c_str()) +
+                           String(" in stage ") + String::num_int64(stage_id));
+
+    return response.to_string();
+}
+
+std::string McpServer::handle_list_prims(const std::string& id, const std::string& request) {
+    // Extract parameters
+    int64_t stage_id = extract_int_param(request, "stage_id");
+
+    if (stage_id == 0) {
+        send_error(id, -32602, "Invalid stage_id parameter");
+        return "";
+    }
+
+    // Get prim list from stage manager
+    std::vector<std::string> prim_paths = UsdStageManager::get_singleton().list_prims(stage_id);
+
+    // Build response with array of prim paths
+    JsonValue prims_array = JsonValue::array();
+    for (const std::string& path : prim_paths) {
+        prims_array.push(JsonValue::string(path));
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    result.set("prims", prims_array);
+    result.set("count", JsonValue::number(static_cast<double>(prim_paths.size())));
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    UtilityFunctions::print(String("MCP Server: Listed ") + String::num_int64(prim_paths.size()) +
+                           String(" prims in stage ") + String::num_int64(stage_id));
 
     return response.to_string();
 }

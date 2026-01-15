@@ -97,3 +97,4 @@ var/
 *.sql
 *.sqlite
 test_project/snowman.usda
+test_project/snowman_enhanced.usda

@@ -49,3 +49,10 @@ cmake --install . --prefix=../
 echo "Build completed successfully!"
 echo "The plugin has been installed to the 'addons/godot-usd' directory."
 echo "To use the plugin, copy the 'addons' directory to your Godot project."
+
+# If test_project exists, copy the library there automatically for testing
+if [ -d "../test_project/lib" ]; then
+    echo "Copying library to test_project/lib for testing..."
+    cp ../lib/libgodot-usd.dylib ../test_project/lib/libgodot-usd.dylib
+    echo "Library copied to test_project."
+fi

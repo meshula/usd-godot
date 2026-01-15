@@ -189,7 +189,7 @@ The implementation intentionally avoids third-party JSON libraries:
 
 ## Implemented USD Commands
 
-The MCP server now includes full USD stage management with generation tracking:
+The MCP server includes full USD stage management with generation tracking:
 
 ### Stage Management
 - ✅ `usd/create_stage` - Create new USD stage (in-memory or file-based)
@@ -198,16 +198,45 @@ The MCP server now includes full USD stage management with generation tracking:
 
 ### Prim Operations
 - ✅ `usd/create_prim` - Create prim with type (e.g., Sphere, Xform)
+- ✅ `usd/set_attribute` - Set an attribute on a prim
+- ✅ `usd/get_attribute` - Get an attribute value from a prim
+- ✅ `usd/set_transform` - Set transform (translation, rotation, scale) on a prim
+- ✅ `usd/list_prims` - List all prims in a stage
 
 ### Generation Tracking
 Every stage mutation increments a generation counter:
 - Create prim → generation++
+- Set attribute → generation++
+- Set transform → generation++
 - Save stage → generation stays same (saving doesn't modify)
 - Query generation → check if saves are needed
 
-**Example:**
+### Tool Capabilities
+The MCP initialize response now includes a complete list of all supported tools/commands:
+
+```json
+{
+  "capabilities": {
+    "tools": {
+      "tools": [
+        {"name": "usd/create_stage", "description": "Create a new USD stage (in-memory or file-based)"},
+        {"name": "usd/save_stage", "description": "Save a USD stage to file"},
+        {"name": "usd/query_generation", "description": "Query stage generation number (tracks modifications)"},
+        {"name": "usd/create_prim", "description": "Create a prim with specified type"},
+        {"name": "usd/set_attribute", "description": "Set an attribute on a prim"},
+        {"name": "usd/get_attribute", "description": "Get an attribute value from a prim"},
+        {"name": "usd/set_transform", "description": "Set transform (translation, rotation, scale) on a prim"},
+        {"name": "usd/list_prims", "description": "List all prims in a stage"}
+      ]
+    }
+  }
+}
+```
+
+**Examples:**
 ```bash
-./test_snowman.sh  # Creates a 3-sphere snowman USD file
+./test_snowman.sh              # Creates basic 3-sphere snowman
+./test_snowman_enhanced.sh     # Creates snowman with transforms and attributes
 ```
 
 See [STAGE_MANAGER_IMPLEMENTATION.md](STAGE_MANAGER_IMPLEMENTATION.md) for full details.
@@ -217,10 +246,8 @@ See [STAGE_MANAGER_IMPLEMENTATION.md](STAGE_MANAGER_IMPLEMENTATION.md) for full 
 Additional capabilities to add:
 
 1. **More USD Operations**
-   - Set prim attributes
    - Create relationships
-   - Set transforms/positions
-   - Query prim properties
+   - Query prim properties (type, metadata)
 
 2. **Godot Resources**
    - `godot/scene_tree` - Get current scene tree structure

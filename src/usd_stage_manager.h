@@ -34,6 +34,23 @@ public:
     // Helper to define a prim (increments generation)
     UsdPrim define_prim(const std::string& path, const std::string& type_name);
 
+    // Get prim (read-only, does NOT increment generation)
+    UsdPrim get_prim(const std::string& path) const;
+
+    // Set prim attribute (increments generation)
+    bool set_attribute(const std::string& prim_path, const std::string& attr_name,
+                      const std::string& value_type, const std::string& value);
+
+    // Get prim attribute (read-only, does NOT increment generation)
+    bool get_attribute(const std::string& prim_path, const std::string& attr_name,
+                      std::string& out_value, std::string& out_type) const;
+
+    // Set transform (increments generation)
+    bool set_transform(const std::string& prim_path,
+                      double tx, double ty, double tz,
+                      double rx, double ry, double rz,
+                      double sx, double sy, double sz);
+
     // Save stage (does NOT increment generation - saving doesn't change the stage)
     bool save();
     bool export_to_string(std::string& out_string);
@@ -69,6 +86,25 @@ public:
 
     // Create prim in stage (convenience method)
     bool create_prim(StageId id, const std::string& path, const std::string& type_name);
+
+    // Set prim attribute in stage (convenience method)
+    bool set_prim_attribute(StageId id, const std::string& prim_path,
+                           const std::string& attr_name, const std::string& value_type,
+                           const std::string& value);
+
+    // Get prim attribute from stage (convenience method)
+    bool get_prim_attribute(StageId id, const std::string& prim_path,
+                           const std::string& attr_name, std::string& out_value,
+                           std::string& out_type);
+
+    // Set prim transform (convenience method)
+    bool set_prim_transform(StageId id, const std::string& prim_path,
+                           double tx, double ty, double tz,
+                           double rx, double ry, double rz,
+                           double sx, double sy, double sz);
+
+    // List all prims in stage (convenience method)
+    std::vector<std::string> list_prims(StageId id);
 
     // Get all active stage IDs
     std::vector<StageId> get_active_stages() const;

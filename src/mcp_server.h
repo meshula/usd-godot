@@ -41,6 +41,10 @@ private:
     std::string handle_save_stage(const std::string& id, const std::string& request);
     std::string handle_query_generation(const std::string& id, const std::string& request);
     std::string handle_create_prim(const std::string& id, const std::string& request);
+    std::string handle_set_attribute(const std::string& id, const std::string& request);
+    std::string handle_get_attribute(const std::string& id, const std::string& request);
+    std::string handle_set_transform(const std::string& id, const std::string& request);
+    std::string handle_list_prims(const std::string& id, const std::string& request);
 
     // Send a JSON-RPC response
     void send_response(const std::string& response);
@@ -54,6 +58,7 @@ private:
     std::string extract_id(const std::string& request);
     std::string extract_string_param(const std::string& request, const std::string& param_name);
     int64_t extract_int_param(const std::string& request, const std::string& param_name);
+    double extract_double_param(const std::string& request, const std::string& param_name);
 
     std::thread server_thread_;
     std::atomic<bool> running_;
