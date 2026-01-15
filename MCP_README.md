@@ -187,15 +187,40 @@ The implementation intentionally avoids third-party JSON libraries:
 - **USD Version**: `PXR_VERSION` macro from `pxr/pxr.h` (format: YYMM, e.g., 2505 = 25.05)
 - **Registration Status**: Tracked via `s_usd_plugins_registered` flag
 
+## Implemented USD Commands
+
+The MCP server now includes full USD stage management with generation tracking:
+
+### Stage Management
+- ✅ `usd/create_stage` - Create new USD stage (in-memory or file-based)
+- ✅ `usd/save_stage` - Save stage to file
+- ✅ `usd/query_generation` - Get generation number (tracks modifications)
+
+### Prim Operations
+- ✅ `usd/create_prim` - Create prim with type (e.g., Sphere, Xform)
+
+### Generation Tracking
+Every stage mutation increments a generation counter:
+- Create prim → generation++
+- Save stage → generation stays same (saving doesn't modify)
+- Query generation → check if saves are needed
+
+**Example:**
+```bash
+./test_snowman.sh  # Creates a 3-sphere snowman USD file
+```
+
+See [STAGE_MANAGER_IMPLEMENTATION.md](STAGE_MANAGER_IMPLEMENTATION.md) for full details.
+
 ## Future Enhancements
 
-The MCP server is designed to be extensible. Future capabilities could include:
+Additional capabilities to add:
 
-1. **USD Tools**
-   - `usd/open_stage` - Open a USD stage file
-   - `usd/create_prim` - Create a new prim in the stage
-   - `usd/query_prim` - Query prim attributes
-   - `usd/export_scene` - Export Godot scene to USD
+1. **More USD Operations**
+   - Set prim attributes
+   - Create relationships
+   - Set transforms/positions
+   - Query prim properties
 
 2. **Godot Resources**
    - `godot/scene_tree` - Get current scene tree structure
