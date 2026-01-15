@@ -118,6 +118,10 @@ set(SOURCES
     src/usd_stage_proxy.h
     src/usd_prim_proxy.cpp
     src/usd_prim_proxy.h
+    src/mcp_server.cpp
+    src/mcp_server.h
+    src/mcp_json.h
+    src/version.h
 )
 
 # Create the shared library

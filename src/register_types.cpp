@@ -5,6 +5,7 @@
 #include "usd_state.h"
 #include "usd_stage_proxy.h"
 #include "usd_prim_proxy.h"
+#include "mcp_server.h"
 
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -21,6 +22,9 @@ using namespace godot;
 
 // Flag to track if USD plugins have been registered
 static bool s_usd_plugins_registered = false;
+
+// Global MCP server instance
+static mcp::McpServer* s_mcp_server = nullptr;
 
 // Helper function to get the GDExtension library directory
 // This returns the path to the directory containing our .dylib/.so/.dll
@@ -74,9 +78,25 @@ static void register_usd_plugins() {
     s_usd_plugins_registered = true;
 }
 
+// Check if running in interactive mode (look for --mcp or --interactive flag)
+static bool is_interactive_mode() {
+    OS* os = OS::get_singleton();
+    PackedStringArray args = os->get_cmdline_args();
+
+    for (int i = 0; i < args.size(); i++) {
+        String arg = args[i];
+        if (arg == "--mcp" || arg == "--interactive") {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Register plugin classes
 void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        UtilityFunctions::print("USD-Godot: Initializing at SCENE level");
+
         // Register USD plugins before anything else that uses USD
         register_usd_plugins();
 
@@ -86,7 +106,24 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<UsdState>();
         ClassDB::register_class<UsdStageProxy>();
         ClassDB::register_class<UsdPrimProxy>();
+
+        UtilityFunctions::print("USD-Godot: Classes registered");
+
+        // Start MCP server if running in interactive mode
+        if (is_interactive_mode()) {
+            UtilityFunctions::print("USD-Godot: Interactive mode detected, starting MCP server");
+            s_mcp_server = new mcp::McpServer();
+            s_mcp_server->set_plugin_registered(s_usd_plugins_registered);
+            if (s_mcp_server->start()) {
+                UtilityFunctions::print("USD-Godot: MCP server started successfully");
+            } else {
+                UtilityFunctions::printerr("USD-Godot: Failed to start MCP server");
+            }
+        } else {
+            UtilityFunctions::print("USD-Godot: Not in interactive mode, MCP server not started");
+        }
     } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+        UtilityFunctions::print("USD-Godot: Initializing at EDITOR level");
         // Register editor plugin classes - only in editor mode
         if (Engine::get_singleton()->is_editor_hint()) {
             ClassDB::register_class<USDPlugin>();
@@ -99,6 +136,12 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        // Stop MCP server if it was started
+        if (s_mcp_server) {
+            s_mcp_server->stop();
+            delete s_mcp_server;
+            s_mcp_server = nullptr;
+        }
         // Unregister non-editor classes here
         // Note: We don't need to explicitly unregister classes, as they are automatically
         // unregistered when the module is unloaded. This is just for completeness.
