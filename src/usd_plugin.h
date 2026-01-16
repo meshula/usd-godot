@@ -24,6 +24,7 @@ namespace godot {
 // Forward declarations
 class UsdDocument;
 class UsdExportSettings;
+class McpControlPanel;
 
 class USDPlugin : public EditorPlugin {
     GDCLASS(USDPlugin, EditorPlugin);
@@ -39,6 +40,9 @@ private:
     
     // USD Import components
     EditorFileDialog *_import_file_dialog = nullptr;
+
+    // MCP Control Panel
+    McpControlPanel *_mcp_control_panel = nullptr;
     
     void _popup_usd_export_dialog();
     void _export_scene_as_usd(const String &p_file_path);

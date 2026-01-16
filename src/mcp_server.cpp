@@ -1,5 +1,6 @@
 #include "mcp_server.h"
 #include "mcp_json.h"
+#include "mcp_globals.h"
 #include "version.h"
 #include "usd_stage_manager.h"
 
@@ -9,6 +10,14 @@
 
 #include <sstream>
 #include <algorithm>
+#include <chrono>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/select.h>
+#include <unistd.h>
+#endif
 
 using namespace godot;
 using namespace usd_godot;
@@ -55,7 +64,35 @@ void McpServer::run() {
     std::string line;
 
     while (running_) {
-        // Read from stdin
+#ifndef _WIN32
+        // Use select() to check if stdin has data available with a timeout
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);
+
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000; // 100ms timeout
+
+        int result = select(STDIN_FILENO + 1, &read_fds, nullptr, nullptr, &timeout);
+
+        if (result < 0) {
+            // Error in select
+            break;
+        } else if (result == 0) {
+            // Timeout - no data available, continue loop to check running_ flag
+            continue;
+        }
+#else
+        // Windows - just sleep briefly and check running_ flag
+        // (Windows doesn't support select() on stdin)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        // Try non-blocking check if data is available
+        // Note: This is simplified for Windows, may need improvement
+#endif
+
+        // Data is available, read it
         if (!std::getline(std::cin, line)) {
             // EOF or error
             break;
@@ -68,17 +105,25 @@ void McpServer::run() {
         // Process the request
         process_request(line);
     }
+
+    UtilityFunctions::print("MCP Server: Thread exiting cleanly");
 }
 
 void McpServer::process_request(const std::string& request) {
-    std::lock_guard<std::mutex> lock(io_mutex_);
+    std::string response = process_request_sync(request);
+    if (!response.empty()) {
+        std::lock_guard<std::mutex> lock(io_mutex_);
+        send_response(response);
+    }
+}
 
+std::string McpServer::process_request_sync(const std::string& request) {
     // Extract method name
     std::string method = extract_method(request);
     std::string id = extract_id(request);
 
     if (method.empty()) {
-        // Invalid request - send error
+        // Invalid request - return error
         JsonValue error = JsonValue::object();
         error.set("jsonrpc", JsonValue::string("2.0"));
         if (!id.empty()) {
@@ -90,46 +135,44 @@ void McpServer::process_request(const std::string& request) {
         errorObj.set("code", JsonValue::number(-32700));
         errorObj.set("message", JsonValue::string("Parse error"));
         error.set("error", errorObj);
-        send_response(error.to_string());
-        return;
+        return error.to_string();
     }
 
     // Handle different methods
     if (method == "initialize") {
-        std::string response = handle_initialize(id);
-        send_response(response);
         initialized_ = true;
+        return handle_initialize(id);
     } else if (method == "initialized") {
         // Client notification that initialization is complete
         // No response needed for notifications
         UtilityFunctions::print("MCP Server: Client initialization complete");
+        return ""; // No response for notifications
     } else if (method == "usd/create_stage") {
-        std::string response = handle_create_stage(id, request);
-        send_response(response);
+        return handle_create_stage(id, request);
     } else if (method == "usd/save_stage") {
-        std::string response = handle_save_stage(id, request);
-        send_response(response);
+        return handle_save_stage(id, request);
     } else if (method == "usd/query_generation") {
-        std::string response = handle_query_generation(id, request);
-        send_response(response);
+        return handle_query_generation(id, request);
     } else if (method == "usd/create_prim") {
-        std::string response = handle_create_prim(id, request);
-        send_response(response);
+        return handle_create_prim(id, request);
     } else if (method == "usd/set_attribute") {
-        std::string response = handle_set_attribute(id, request);
-        send_response(response);
+        return handle_set_attribute(id, request);
     } else if (method == "usd/get_attribute") {
-        std::string response = handle_get_attribute(id, request);
-        send_response(response);
+        return handle_get_attribute(id, request);
     } else if (method == "usd/set_transform") {
-        std::string response = handle_set_transform(id, request);
-        send_response(response);
+        return handle_set_transform(id, request);
     } else if (method == "usd/list_prims") {
-        std::string response = handle_list_prims(id, request);
-        send_response(response);
+        return handle_list_prims(id, request);
     } else {
         // Method not found
-        send_error(id, -32601, "Method not found: " + method);
+        JsonValue error = JsonValue::object();
+        error.set("jsonrpc", JsonValue::string("2.0"));
+        error.set("id", JsonValue::string(id));
+        JsonValue errorObj = JsonValue::object();
+        errorObj.set("code", JsonValue::number(-32601));
+        errorObj.set("message", JsonValue::string("Method not found: " + method));
+        error.set("error", errorObj);
+        return error.to_string();
     }
 }
 
@@ -328,7 +371,7 @@ std::string McpServer::extract_id(const std::string& request) {
     }
 }
 
-void McpServer::send_error(const std::string& id, int code, const std::string& message) {
+std::string McpServer::build_error(const std::string& id, int code, const std::string& message) {
     JsonValue error = JsonValue::object();
     error.set("jsonrpc", JsonValue::string("2.0"));
     if (!id.empty()) {
@@ -340,7 +383,25 @@ void McpServer::send_error(const std::string& id, int code, const std::string& m
     errorObj.set("code", JsonValue::number(code));
     errorObj.set("message", JsonValue::string(message));
     error.set("error", errorObj);
-    send_response(error.to_string());
+    return error.to_string();
+}
+
+void McpServer::add_metadata_to_result(JsonValue& result) {
+    // Get user notes from global
+    std::string user_notes = usd_godot::get_user_notes();
+
+    // Only add _meta if there are notes (keep responses clean)
+    if (!user_notes.empty()) {
+        JsonValue meta = JsonValue::object();
+        meta.set("notes", JsonValue::string(user_notes));
+        result.set("_meta", meta);
+    }
+}
+
+void McpServer::log_operation(const std::string& operation, const std::string& details) {
+    if (log_callback_) {
+        log_callback_(operation, details);
+    }
 }
 
 std::string McpServer::extract_string_param(const std::string& request, const std::string& param_name) {
@@ -455,14 +516,24 @@ std::string McpServer::handle_create_stage(const std::string& id, const std::str
     StageId stage_id = UsdStageManager::get_singleton().create_stage(file_path);
 
     if (stage_id == 0) {
-        send_error(id, -32000, "Failed to create USD stage");
-        return "";
+        log_operation("Create Stage Failed", file_path.empty() ? "(in-memory)" : file_path);
+        return build_error(id, -32000, "Failed to create USD stage");
     }
+
+    // Log operation
+    std::string details = "Stage ID: " + std::to_string(stage_id);
+    if (!file_path.empty()) {
+        details += ", Path: " + file_path;
+    } else {
+        details += " (in-memory)";
+    }
+    log_operation("Create Stage", details);
 
     // Build response
     JsonValue result = JsonValue::object();
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
     result.set("generation", JsonValue::number(0));
+    add_metadata_to_result(result);
 
     JsonValue response = JsonValue::object();
     response.set("jsonrpc", JsonValue::string("2.0"));
@@ -480,20 +551,27 @@ std::string McpServer::handle_save_stage(const std::string& id, const std::strin
     std::string file_path = extract_string_param(request, "file_path");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     // Save stage using stage manager
     bool success = UsdStageManager::get_singleton().save_stage(stage_id, file_path);
 
     if (!success) {
-        send_error(id, -32000, "Failed to save USD stage");
-        return "";
+        log_operation("Save Stage Failed", "Stage ID: " + std::to_string(stage_id));
+        return build_error(id, -32000, "Failed to save USD stage");
     }
+
+    // Log operation
+    std::string details = "Stage ID: " + std::to_string(stage_id);
+    if (!file_path.empty()) {
+        details += ", Path: " + file_path;
+    }
+    log_operation("Save Stage", details);
 
     // Build response
     JsonValue result = JsonValue::object();
+    add_metadata_to_result(result);
     result.set("success", JsonValue::boolean(true));
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
 
@@ -512,8 +590,7 @@ std::string McpServer::handle_query_generation(const std::string& id, const std:
     int64_t stage_id = extract_int_param(request, "stage_id");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     // Get generation from stage manager
@@ -522,6 +599,7 @@ std::string McpServer::handle_query_generation(const std::string& id, const std:
     // Build response
     JsonValue result = JsonValue::object();
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    add_metadata_to_result(result);
     result.set("generation", JsonValue::number(static_cast<double>(generation)));
 
     JsonValue response = JsonValue::object();
@@ -539,29 +617,36 @@ std::string McpServer::handle_create_prim(const std::string& id, const std::stri
     std::string prim_type = extract_string_param(request, "prim_type");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     if (prim_path.empty()) {
-        send_error(id, -32602, "Missing prim_path parameter");
-        return "";
+        return build_error(id, -32602, "Missing prim_path parameter");
     }
 
     // Create prim using stage manager
     bool success = UsdStageManager::get_singleton().create_prim(stage_id, prim_path, prim_type);
 
     if (!success) {
-        send_error(id, -32000, "Failed to create prim");
-        return "";
+        log_operation("Create Prim Failed", prim_path + " on Stage " + std::to_string(stage_id));
+        return build_error(id, -32000, "Failed to create prim");
     }
 
     // Get updated generation
     uint64_t generation = UsdStageManager::get_singleton().get_generation(stage_id);
 
+    // Log operation
+    std::string details = prim_path;
+    if (!prim_type.empty()) {
+        details += " (" + prim_type + ")";
+    }
+    details += " on Stage " + std::to_string(stage_id);
+    log_operation("Create Prim", details);
+
     // Build response
     JsonValue result = JsonValue::object();
     result.set("success", JsonValue::boolean(true));
+    add_metadata_to_result(result);
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
     result.set("prim_path", JsonValue::string(prim_path));
     result.set("generation", JsonValue::number(static_cast<double>(generation)));
@@ -586,23 +671,19 @@ std::string McpServer::handle_set_attribute(const std::string& id, const std::st
     std::string value = extract_string_param(request, "value");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     if (prim_path.empty()) {
-        send_error(id, -32602, "Missing prim_path parameter");
-        return "";
+        return build_error(id, -32602, "Missing prim_path parameter");
     }
 
     if (attr_name.empty()) {
-        send_error(id, -32602, "Missing attr_name parameter");
-        return "";
+        return build_error(id, -32602, "Missing attr_name parameter");
     }
 
     if (value_type.empty()) {
-        send_error(id, -32602, "Missing value_type parameter");
-        return "";
+        return build_error(id, -32602, "Missing value_type parameter");
     }
 
     // Set attribute using stage manager
@@ -610,16 +691,21 @@ std::string McpServer::handle_set_attribute(const std::string& id, const std::st
         stage_id, prim_path, attr_name, value_type, value);
 
     if (!success) {
-        send_error(id, -32000, "Failed to set attribute");
-        return "";
+        log_operation("Set Attribute Failed", prim_path + "." + attr_name);
+        return build_error(id, -32000, "Failed to set attribute");
     }
 
     // Get updated generation
     uint64_t generation = UsdStageManager::get_singleton().get_generation(stage_id);
 
+    // Log operation
+    std::string details = prim_path + "." + attr_name + " = " + value + " (" + value_type + ")";
+    log_operation("Set Attribute", details);
+
     // Build response
     JsonValue result = JsonValue::object();
     result.set("success", JsonValue::boolean(true));
+    add_metadata_to_result(result);
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
     result.set("prim_path", JsonValue::string(prim_path));
     result.set("attr_name", JsonValue::string(attr_name));
@@ -644,18 +730,15 @@ std::string McpServer::handle_get_attribute(const std::string& id, const std::st
     std::string attr_name = extract_string_param(request, "attr_name");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     if (prim_path.empty()) {
-        send_error(id, -32602, "Missing prim_path parameter");
-        return "";
+        return build_error(id, -32602, "Missing prim_path parameter");
     }
 
     if (attr_name.empty()) {
-        send_error(id, -32602, "Missing attr_name parameter");
-        return "";
+        return build_error(id, -32602, "Missing attr_name parameter");
     }
 
     // Get attribute using stage manager
@@ -665,13 +748,13 @@ std::string McpServer::handle_get_attribute(const std::string& id, const std::st
         stage_id, prim_path, attr_name, value, value_type);
 
     if (!success) {
-        send_error(id, -32000, "Failed to get attribute");
-        return "";
+        return build_error(id, -32000, "Failed to get attribute");
     }
 
     // Build response
     JsonValue result = JsonValue::object();
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    add_metadata_to_result(result);
     result.set("prim_path", JsonValue::string(prim_path));
     result.set("attr_name", JsonValue::string(attr_name));
     result.set("value", JsonValue::string(value));
@@ -702,13 +785,11 @@ std::string McpServer::handle_set_transform(const std::string& id, const std::st
     double sz = extract_double_param(request, "sz");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     if (prim_path.empty()) {
-        send_error(id, -32602, "Missing prim_path parameter");
-        return "";
+        return build_error(id, -32602, "Missing prim_path parameter");
     }
 
     // Set transform using stage manager
@@ -716,16 +797,24 @@ std::string McpServer::handle_set_transform(const std::string& id, const std::st
         stage_id, prim_path, tx, ty, tz, rx, ry, rz, sx, sy, sz);
 
     if (!success) {
-        send_error(id, -32000, "Failed to set transform");
-        return "";
+        log_operation("Set Transform Failed", prim_path);
+        return build_error(id, -32000, "Failed to set transform");
     }
 
     // Get updated generation
     uint64_t generation = UsdStageManager::get_singleton().get_generation(stage_id);
 
+    // Log operation
+    std::ostringstream details;
+    details << prim_path << " - T(" << tx << "," << ty << "," << tz << ") ";
+    details << "R(" << rx << "," << ry << "," << rz << ") ";
+    details << "S(" << sx << "," << sy << "," << sz << ")";
+    log_operation("Set Transform", details.str());
+
     // Build response
     JsonValue result = JsonValue::object();
     result.set("success", JsonValue::boolean(true));
+    add_metadata_to_result(result);
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
     result.set("prim_path", JsonValue::string(prim_path));
     result.set("generation", JsonValue::number(static_cast<double>(generation)));
@@ -746,8 +835,7 @@ std::string McpServer::handle_list_prims(const std::string& id, const std::strin
     int64_t stage_id = extract_int_param(request, "stage_id");
 
     if (stage_id == 0) {
-        send_error(id, -32602, "Invalid stage_id parameter");
-        return "";
+        return build_error(id, -32602, "Invalid stage_id parameter");
     }
 
     // Get prim list from stage manager
@@ -761,6 +849,7 @@ std::string McpServer::handle_list_prims(const std::string& id, const std::strin
 
     JsonValue result = JsonValue::object();
     result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    add_metadata_to_result(result);
     result.set("prims", prims_array);
     result.set("count", JsonValue::number(static_cast<double>(prim_paths.size())));
 

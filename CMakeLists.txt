@@ -122,6 +122,11 @@ set(SOURCES
     src/usd_stage_manager.h
     src/mcp_server.cpp
     src/mcp_server.h
+    src/mcp_http_server.cpp
+    src/mcp_http_server.h
+    src/mcp_control_panel.cpp
+    src/mcp_control_panel.h
+    src/mcp_globals.h
     src/mcp_json.h
     src/version.h
 )

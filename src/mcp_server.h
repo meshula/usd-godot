@@ -6,11 +6,18 @@
 #include <atomic>
 #include <mutex>
 #include <iostream>
+#include <functional>
 
 namespace mcp {
 
+// Forward declaration
+class JsonValue;
+
 class McpServer {
 public:
+    // Callback for logging operations to control panel
+    using LogCallback = std::function<void(const std::string&, const std::string&)>;
+
     McpServer();
     ~McpServer();
 
@@ -25,6 +32,13 @@ public:
 
     // Get plugin registration status
     void set_plugin_registered(bool registered) { plugin_registered_ = registered; }
+
+    // Set callback for operation logging
+    void set_log_callback(LogCallback callback) { log_callback_ = callback; }
+
+    // Process a JSON-RPC request and return the response
+    // This is exposed for HTTP transport mode
+    std::string process_request_sync(const std::string& request);
 
 private:
     // Main server loop (runs in background thread)
@@ -49,8 +63,14 @@ private:
     // Send a JSON-RPC response
     void send_response(const std::string& response);
 
-    // Helper to send error response
-    void send_error(const std::string& id, int code, const std::string& message);
+    // Helper to build error response
+    std::string build_error(const std::string& id, int code, const std::string& message);
+
+    // Helper to add metadata (including user notes) to result
+    void add_metadata_to_result(JsonValue& result);
+
+    // Helper to log operations (if callback is set)
+    void log_operation(const std::string& operation, const std::string& details = "");
 
     // Parse a simple JSON request to extract method name and parameters
     // Returns empty string if parsing fails
@@ -65,6 +85,7 @@ private:
     std::atomic<bool> initialized_;
     bool plugin_registered_;
     std::mutex io_mutex_;
+    LogCallback log_callback_;
 };
 
 } // namespace mcp

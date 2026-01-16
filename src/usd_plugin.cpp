@@ -4,6 +4,7 @@
 #include "usd_mesh_export_helper.h"
 #include "usd_mesh_import_helper.h"
 #include "usd_state.h"
+#include "mcp_control_panel.h"
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
@@ -131,6 +132,11 @@ void USDPlugin::_enter_tree() {
     // Add the button to the editor's toolbar
     add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, import_button);
     UtilityFunctions::print("USD Plugin: Added Import USD button to toolbar");
+
+    // Create and add MCP Control Panel
+    _mcp_control_panel = memnew(McpControlPanel);
+    add_control_to_bottom_panel(_mcp_control_panel, "MCP Control");
+    UtilityFunctions::print("USD Plugin: Added MCP Control Panel to bottom panel");
     
     if (!_file_dialog) {
         // Set up the export file dialog
@@ -191,7 +197,14 @@ void USDPlugin::_exit_tree() {
     }
     
     // The import button is automatically removed when the plugin is removed
-    
+
+    // Remove MCP Control Panel
+    if (_mcp_control_panel) {
+        remove_control_from_bottom_panel(_mcp_control_panel);
+        _mcp_control_panel->queue_free();
+        _mcp_control_panel = nullptr;
+    }
+
     UtilityFunctions::print("USD Plugin: Exit Tree");
 }
 

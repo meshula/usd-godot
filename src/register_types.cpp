@@ -6,6 +6,8 @@
 #include "usd_stage_proxy.h"
 #include "usd_prim_proxy.h"
 #include "mcp_server.h"
+#include "mcp_http_server.h"
+#include "mcp_control_panel.h"
 
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -23,8 +25,34 @@ using namespace godot;
 // Flag to track if USD plugins have been registered
 static bool s_usd_plugins_registered = false;
 
-// Global MCP server instance
+// Global MCP server instances
 static mcp::McpServer* s_mcp_server = nullptr;
+static mcp::McpHttpServer* s_mcp_http_server = nullptr;
+
+// Global user notes for real-time LLM communication
+static std::string s_user_notes = "";
+static std::mutex s_user_notes_mutex;
+
+// Accessors for MCP servers (for control panel)
+namespace usd_godot {
+    mcp::McpServer* get_mcp_server_instance() {
+        return s_mcp_server;
+    }
+
+    mcp::McpHttpServer* get_mcp_http_server_instance() {
+        return s_mcp_http_server;
+    }
+
+    std::string get_user_notes() {
+        std::lock_guard<std::mutex> lock(s_user_notes_mutex);
+        return s_user_notes;
+    }
+
+    void set_user_notes(const std::string& notes) {
+        std::lock_guard<std::mutex> lock(s_user_notes_mutex);
+        s_user_notes = notes;
+    }
+}
 
 // Helper function to get the GDExtension library directory
 // This returns the path to the directory containing our .dylib/.so/.dll
@@ -78,14 +106,28 @@ static void register_usd_plugins() {
     s_usd_plugins_registered = true;
 }
 
-// Check if running in interactive mode (look for --mcp or --interactive flag)
-static bool is_interactive_mode() {
+// Check if running in MCP mode (look for --mcp or --interactive flag)
+static bool is_mcp_mode() {
     OS* os = OS::get_singleton();
     PackedStringArray args = os->get_cmdline_args();
 
     for (int i = 0; i < args.size(); i++) {
         String arg = args[i];
         if (arg == "--mcp" || arg == "--interactive") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Check if running headless (look for --headless flag)
+static bool is_headless_mode() {
+    OS* os = OS::get_singleton();
+    PackedStringArray args = os->get_cmdline_args();
+
+    for (int i = 0; i < args.size(); i++) {
+        String arg = args[i];
+        if (arg == "--headless") {
             return true;
         }
     }
@@ -106,21 +148,40 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<UsdState>();
         ClassDB::register_class<UsdStageProxy>();
         ClassDB::register_class<UsdPrimProxy>();
+        ClassDB::register_class<McpControlPanel>();
 
         UtilityFunctions::print("USD-Godot: Classes registered");
 
-        // Start MCP server if running in interactive mode
-        if (is_interactive_mode()) {
-            UtilityFunctions::print("USD-Godot: Interactive mode detected, starting MCP server");
-            s_mcp_server = new mcp::McpServer();
-            s_mcp_server->set_plugin_registered(s_usd_plugins_registered);
-            if (s_mcp_server->start()) {
-                UtilityFunctions::print("USD-Godot: MCP server started successfully");
+        // Create MCP server instance (used by both stdio and HTTP modes)
+        s_mcp_server = new mcp::McpServer();
+        s_mcp_server->set_plugin_registered(s_usd_plugins_registered);
+
+        // Start appropriate MCP transport based on mode
+        if (is_mcp_mode()) {
+            bool headless = is_headless_mode();
+
+            if (headless) {
+                // Headless mode: Use stdio transport (for Claude Code to spawn and control)
+                UtilityFunctions::print("USD-Godot: Headless MCP mode - starting stdio transport");
+                if (s_mcp_server->start()) {
+                    UtilityFunctions::print("USD-Godot: MCP stdio server started successfully");
+                } else {
+                    UtilityFunctions::printerr("USD-Godot: Failed to start MCP stdio server");
+                }
             } else {
-                UtilityFunctions::printerr("USD-Godot: Failed to start MCP server");
+                // Interactive mode (GUI): Use HTTP transport
+                UtilityFunctions::print("USD-Godot: Interactive MCP mode - starting HTTP transport");
+                s_mcp_http_server = new mcp::McpHttpServer();
+                s_mcp_http_server->set_mcp_server(s_mcp_server);
+
+                if (s_mcp_http_server->start(3000)) {
+                    UtilityFunctions::print("USD-Godot: MCP HTTP server started successfully on port 3000");
+                } else {
+                    UtilityFunctions::printerr("USD-Godot: Failed to start MCP HTTP server");
+                }
             }
         } else {
-            UtilityFunctions::print("USD-Godot: Not in interactive mode, MCP server not started");
+            UtilityFunctions::print("USD-Godot: Not in MCP mode, servers not started");
         }
     } else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
         UtilityFunctions::print("USD-Godot: Initializing at EDITOR level");
@@ -128,7 +189,8 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         if (Engine::get_singleton()->is_editor_hint()) {
             ClassDB::register_class<USDPlugin>();
 
-            // Register the plugin with the editor
+            // Register the plugin directly with the editor
+            // Note: Direct registration is simpler for GDExtensions in Godot 4.x
             EditorPlugins::add_by_type<USDPlugin>();
         }
     }
@@ -136,7 +198,22 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
-        // Stop MCP server if it was started
+        // Clear callbacks BEFORE stopping servers to prevent crashes during shutdown
+        // (callbacks may reference UI objects that are being destroyed)
+        if (s_mcp_http_server) {
+            s_mcp_http_server->set_log_callback(nullptr);
+        }
+        if (s_mcp_server) {
+            s_mcp_server->set_log_callback(nullptr);
+        }
+
+        // Stop MCP servers if they were started
+        if (s_mcp_http_server) {
+            s_mcp_http_server->stop();
+            delete s_mcp_http_server;
+            s_mcp_http_server = nullptr;
+        }
+
         if (s_mcp_server) {
             s_mcp_server->stop();
             delete s_mcp_server;
