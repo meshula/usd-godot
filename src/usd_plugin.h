@@ -7,6 +7,7 @@
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/editor_inspector.hpp>
 #include <godot_cpp/classes/editor_file_dialog.hpp>
+#include <godot_cpp/classes/editor_selection.hpp>
 #include <godot_cpp/classes/accept_dialog.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -100,6 +101,14 @@ public:
     // Public scene query method for MCP
     String _query_scene_tree(const String &p_path);
 
+    // Public scene manipulation methods for MCP (Phase 1)
+    String _get_node_properties(const String &p_node_path);
+    bool _update_node_property(const String &p_node_path, const String &p_property, const String &p_value);
+    String _duplicate_node(const String &p_node_path, const String &p_new_name);
+    String _save_scene(const String &p_path);
+    String _get_bounding_box(const String &p_node_path);
+    String _get_selection();
+
 private:
     // Helper structure for thread-safe scene queries
     struct SceneQueryRequest {
@@ -113,8 +122,76 @@ private:
     std::mutex pending_queries_mutex_;
     int next_query_id_ = 0;
 
+    // Helper structures for thread-safe Phase 1 operations
+    struct GetPropertiesRequest {
+        String node_path;
+        std::string result;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    struct UpdatePropertyRequest {
+        String node_path;
+        String property;
+        String value;
+        bool result = false;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    struct DuplicateNodeRequest {
+        String node_path;
+        String new_name;
+        std::string result;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    struct SaveSceneRequest {
+        String path;
+        std::string result;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    struct GetBoundingBoxRequest {
+        String node_path;
+        std::string result;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    struct GetSelectionRequest {
+        std::string result;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+    };
+
+    std::map<int, std::shared_ptr<GetPropertiesRequest>> pending_get_properties_;
+    std::map<int, std::shared_ptr<UpdatePropertyRequest>> pending_update_property_;
+    std::map<int, std::shared_ptr<DuplicateNodeRequest>> pending_duplicate_node_;
+    std::map<int, std::shared_ptr<SaveSceneRequest>> pending_save_scene_;
+    std::map<int, std::shared_ptr<GetBoundingBoxRequest>> pending_get_bounding_box_;
+    std::map<int, std::shared_ptr<GetSelectionRequest>> pending_get_selection_;
+    std::mutex pending_operations_mutex_;
+    int next_operation_id_ = 0;
+
     // Helper for thread-safe scene queries
     void _perform_scene_query_deferred(int query_id);
+
+    // Helpers for thread-safe Phase 1 operations
+    void _perform_get_properties_deferred(int op_id);
+    void _perform_update_property_deferred(int op_id);
+    void _perform_duplicate_node_deferred(int op_id);
+    void _perform_save_scene_deferred(int op_id);
+    void _perform_get_bounding_box_deferred(int op_id);
+    void _perform_get_selection_deferred(int op_id);
 };
 
 }

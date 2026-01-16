@@ -17,6 +17,7 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/visual_instance3d.hpp>
 #include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/text_mesh.hpp>
@@ -60,6 +61,22 @@ void USDPlugin::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_import_to_group", "file_path", "group_name", "force"), &USDPlugin::_import_to_group);
     ClassDB::bind_method(D_METHOD("_query_scene_tree", "path"), &USDPlugin::_query_scene_tree);
     ClassDB::bind_method(D_METHOD("_perform_scene_query_deferred", "query_id"), &USDPlugin::_perform_scene_query_deferred);
+
+    // Bind Phase 1 scene manipulation methods
+    ClassDB::bind_method(D_METHOD("_get_node_properties", "node_path"), &USDPlugin::_get_node_properties);
+    ClassDB::bind_method(D_METHOD("_update_node_property", "node_path", "property", "value"), &USDPlugin::_update_node_property);
+    ClassDB::bind_method(D_METHOD("_duplicate_node", "node_path", "new_name"), &USDPlugin::_duplicate_node);
+    ClassDB::bind_method(D_METHOD("_save_scene", "path"), &USDPlugin::_save_scene);
+    ClassDB::bind_method(D_METHOD("_get_bounding_box", "node_path"), &USDPlugin::_get_bounding_box);
+    ClassDB::bind_method(D_METHOD("_get_selection"), &USDPlugin::_get_selection);
+
+    // Bind deferred helpers for Phase 1
+    ClassDB::bind_method(D_METHOD("_perform_get_properties_deferred", "op_id"), &USDPlugin::_perform_get_properties_deferred);
+    ClassDB::bind_method(D_METHOD("_perform_update_property_deferred", "op_id"), &USDPlugin::_perform_update_property_deferred);
+    ClassDB::bind_method(D_METHOD("_perform_duplicate_node_deferred", "op_id"), &USDPlugin::_perform_duplicate_node_deferred);
+    ClassDB::bind_method(D_METHOD("_perform_save_scene_deferred", "op_id"), &USDPlugin::_perform_save_scene_deferred);
+    ClassDB::bind_method(D_METHOD("_perform_get_bounding_box_deferred", "op_id"), &USDPlugin::_perform_get_bounding_box_deferred);
+    ClassDB::bind_method(D_METHOD("_perform_get_selection_deferred", "op_id"), &USDPlugin::_perform_get_selection_deferred);
 }
 
 USDPlugin::USDPlugin() {
@@ -183,6 +200,135 @@ void USDPlugin::_enter_tree() {
                 return request->result;
             } else {
                 return "{\"error\":\"Query timeout\"}";
+            }
+        });
+
+        // Set up Phase 1 scene manipulation callbacks (with thread-safe synchronization)
+        mcp_server->set_get_node_properties_callback([this](const std::string& node_path) -> std::string {
+            auto request = std::make_shared<GetPropertiesRequest>();
+            request->node_path = String(node_path.c_str());
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_get_properties_[op_id] = request;
+            }
+
+            call_deferred("_perform_get_properties_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "{}";
+            }
+        });
+
+        mcp_server->set_update_node_property_callback([this](const std::string& node_path, const std::string& property, const std::string& value) -> bool {
+            auto request = std::make_shared<UpdatePropertyRequest>();
+            request->node_path = String(node_path.c_str());
+            request->property = String(property.c_str());
+            request->value = String(value.c_str());
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_update_property_[op_id] = request;
+            }
+
+            call_deferred("_perform_update_property_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return false;
+            }
+        });
+
+        mcp_server->set_duplicate_node_callback([this](const std::string& node_path, const std::string& new_name) -> std::string {
+            auto request = std::make_shared<DuplicateNodeRequest>();
+            request->node_path = String(node_path.c_str());
+            request->new_name = String(new_name.c_str());
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_duplicate_node_[op_id] = request;
+            }
+
+            call_deferred("_perform_duplicate_node_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "";
+            }
+        });
+
+        mcp_server->set_save_scene_callback([this](const std::string& path) -> std::string {
+            auto request = std::make_shared<SaveSceneRequest>();
+            request->path = String(path.c_str());
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_save_scene_[op_id] = request;
+            }
+
+            call_deferred("_perform_save_scene_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "";
+            }
+        });
+
+        mcp_server->set_get_bounding_box_callback([this](const std::string& node_path) -> std::string {
+            auto request = std::make_shared<GetBoundingBoxRequest>();
+            request->node_path = String(node_path.c_str());
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_get_bounding_box_[op_id] = request;
+            }
+
+            call_deferred("_perform_get_bounding_box_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "{}";
+            }
+        });
+
+        mcp_server->set_get_selection_callback([this]() -> std::string {
+            auto request = std::make_shared<GetSelectionRequest>();
+
+            int op_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+                op_id = next_operation_id_++;
+                pending_get_selection_[op_id] = request;
+            }
+
+            call_deferred("_perform_get_selection_deferred", op_id);
+
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "{}";
             }
         });
 
@@ -950,6 +1096,487 @@ void USDPlugin::_perform_scene_query_deferred(int query_id) {
         request->done = true;
     }
     request->cv.notify_one();
+}
+
+// Phase 1 Scene Manipulation Methods
+
+String USDPlugin::_get_node_properties(const String &p_node_path) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "{}";
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return "{}";
+    }
+
+    // Get the target node
+    Node *target_node = scene_root->get_node_or_null(p_node_path);
+    if (!target_node) {
+        return "{}";
+    }
+
+    // Build JSON with properties
+    String result = "{";
+    bool first = true;
+
+    // Get property list
+    TypedArray<Dictionary> property_list = target_node->get_property_list();
+    for (int i = 0; i < property_list.size(); i++) {
+        Dictionary prop = property_list[i];
+        String name = prop["name"];
+
+        // Skip internal properties
+        if (name.begins_with("_")) {
+            continue;
+        }
+
+        // Get the value
+        Variant value = target_node->get(name);
+
+        if (!first) {
+            result += ",";
+        }
+        first = false;
+
+        result += "\"" + name + "\":";
+
+        // Convert value to JSON-like string
+        switch (value.get_type()) {
+            case Variant::BOOL:
+                result += value ? "true" : "false";
+                break;
+            case Variant::INT:
+            case Variant::FLOAT:
+                result += String::num_real(value);
+                break;
+            case Variant::STRING:
+                result += "\"" + String(value).c_escape() + "\"";
+                break;
+            case Variant::VECTOR2:
+            case Variant::VECTOR3: {
+                Vector3 vec = value;
+                result += "[" + String::num(vec.x) + "," + String::num(vec.y) + "," + String::num(vec.z) + "]";
+                break;
+            }
+            default:
+                result += "\"" + String(value).c_escape() + "\"";
+                break;
+        }
+    }
+
+    result += "}";
+    return result;
+}
+
+bool USDPlugin::_update_node_property(const String &p_node_path, const String &p_property, const String &p_value) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return false;
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return false;
+    }
+
+    // Get the target node
+    Node *target_node = scene_root->get_node_or_null(p_node_path);
+    if (!target_node) {
+        return false;
+    }
+
+    // Check if property exists
+    if (!target_node->get(p_property).get_type()) {
+        return false;
+    }
+
+    // Parse the value based on property type
+    Variant current_value = target_node->get(p_property);
+    Variant new_value;
+
+    switch (current_value.get_type()) {
+        case Variant::BOOL:
+            new_value = (p_value == "true" || p_value == "1");
+            break;
+        case Variant::INT:
+            new_value = p_value.to_int();
+            break;
+        case Variant::FLOAT:
+            new_value = p_value.to_float();
+            break;
+        case Variant::STRING:
+            new_value = p_value;
+            break;
+        case Variant::VECTOR2: {
+            PackedStringArray parts = p_value.split(",");
+            if (parts.size() >= 2) {
+                new_value = Vector2(parts[0].to_float(), parts[1].to_float());
+            }
+            break;
+        }
+        case Variant::VECTOR3: {
+            PackedStringArray parts = p_value.split(",");
+            if (parts.size() >= 3) {
+                new_value = Vector3(parts[0].to_float(), parts[1].to_float(), parts[2].to_float());
+            }
+            break;
+        }
+        default:
+            new_value = p_value;
+            break;
+    }
+
+    // Set the property
+    target_node->set(p_property, new_value);
+
+    // Mark scene as modified
+    editor->mark_scene_as_unsaved();
+
+    return true;
+}
+
+String USDPlugin::_duplicate_node(const String &p_node_path, const String &p_new_name) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "";
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return "";
+    }
+
+    // Get the target node
+    Node *target_node = scene_root->get_node_or_null(p_node_path);
+    if (!target_node) {
+        return "";
+    }
+
+    // Duplicate the node with all its children (deep copy)
+    // DUPLICATE_USE_INSTANTIATION ensures children are included
+    int duplicate_flags = Node::DUPLICATE_SIGNALS | Node::DUPLICATE_GROUPS | Node::DUPLICATE_SCRIPTS | Node::DUPLICATE_USE_INSTANTIATION;
+    Node *duplicated = Object::cast_to<Node>(target_node->duplicate(duplicate_flags));
+    if (!duplicated) {
+        return "";
+    }
+
+    // Set name
+    if (!p_new_name.is_empty()) {
+        duplicated->set_name(p_new_name);
+    } else {
+        duplicated->set_name(String(target_node->get_name()) + String("_copy"));
+    }
+
+    // Add to parent
+    Node *parent = target_node->get_parent();
+    if (parent) {
+        parent->add_child(duplicated);
+
+        // Recursively set owner for the duplicated node and all its children
+        std::function<void(Node*)> set_owner_recursive = [&](Node* node) {
+            node->set_owner(scene_root);
+            for (int i = 0; i < node->get_child_count(); i++) {
+                set_owner_recursive(node->get_child(i));
+            }
+        };
+        set_owner_recursive(duplicated);
+    }
+
+    // Mark scene as modified
+    editor->mark_scene_as_unsaved();
+
+    // Return the new node path
+    return duplicated->get_name();
+}
+
+String USDPlugin::_save_scene(const String &p_path) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "";
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return "";
+    }
+
+    // Determine save path
+    String save_path = p_path;
+    if (save_path.is_empty()) {
+        save_path = scene_root->get_scene_file_path();
+    }
+
+    if (save_path.is_empty()) {
+        return "";
+    }
+
+    // Pack the scene
+    Ref<PackedScene> packed_scene;
+    packed_scene.instantiate();
+    Error err = packed_scene->pack(scene_root);
+    if (err != OK) {
+        return "";
+    }
+
+    // Save to disk
+    err = ResourceSaver::get_singleton()->save(packed_scene, save_path);
+    if (err != OK) {
+        return "";
+    }
+
+    return save_path;
+}
+
+// Deferred helpers for thread-safe Phase 1 operations
+
+void USDPlugin::_perform_get_properties_deferred(int op_id) {
+    std::shared_ptr<GetPropertiesRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_get_properties_.find(op_id);
+        if (it != pending_get_properties_.end()) {
+            request = it->second;
+            pending_get_properties_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    String result = _get_node_properties(request->node_path);
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+void USDPlugin::_perform_update_property_deferred(int op_id) {
+    std::shared_ptr<UpdatePropertyRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_update_property_.find(op_id);
+        if (it != pending_update_property_.end()) {
+            request = it->second;
+            pending_update_property_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    bool result = _update_node_property(request->node_path, request->property, request->value);
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = result;
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+void USDPlugin::_perform_duplicate_node_deferred(int op_id) {
+    std::shared_ptr<DuplicateNodeRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_duplicate_node_.find(op_id);
+        if (it != pending_duplicate_node_.end()) {
+            request = it->second;
+            pending_duplicate_node_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    String result = _duplicate_node(request->node_path, request->new_name);
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+void USDPlugin::_perform_save_scene_deferred(int op_id) {
+    std::shared_ptr<SaveSceneRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_save_scene_.find(op_id);
+        if (it != pending_save_scene_.end()) {
+            request = it->second;
+            pending_save_scene_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    String result = _save_scene(request->path);
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+void USDPlugin::_perform_get_bounding_box_deferred(int op_id) {
+    std::shared_ptr<GetBoundingBoxRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_get_bounding_box_.find(op_id);
+        if (it != pending_get_bounding_box_.end()) {
+            request = it->second;
+            pending_get_bounding_box_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    String result = _get_bounding_box(request->node_path);
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+void USDPlugin::_perform_get_selection_deferred(int op_id) {
+    std::shared_ptr<GetSelectionRequest> request;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_operations_mutex_);
+        auto it = pending_get_selection_.find(op_id);
+        if (it != pending_get_selection_.end()) {
+            request = it->second;
+            pending_get_selection_.erase(it);
+        }
+    }
+
+    if (!request) return;
+
+    String result = _get_selection();
+
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
+}
+
+String USDPlugin::_get_bounding_box(const String &p_node_path) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "{}";
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return "{}";
+    }
+
+    // Get the target node
+    Node *target_node = scene_root->get_node_or_null(p_node_path);
+    if (!target_node) {
+        return "{}";
+    }
+
+    // Calculate AABB from all VisualInstance3D children
+    AABB combined_aabb;
+    bool has_aabb = false;
+
+    // Helper lambda to recursively collect AABBs
+    std::function<void(Node*)> collect_aabbs = [&](Node* node) {
+        // Check if this node is a VisualInstance3D (has AABB)
+        VisualInstance3D *visual = Object::cast_to<VisualInstance3D>(node);
+        if (visual) {
+            AABB local_aabb = visual->get_aabb();
+            Transform3D global_transform = visual->get_global_transform();
+
+            // Transform AABB to global space
+            AABB global_aabb = local_aabb;
+            global_aabb.position = global_transform.xform(local_aabb.position);
+            global_aabb.size *= global_transform.basis.get_scale();
+
+            if (!has_aabb) {
+                combined_aabb = global_aabb;
+                has_aabb = true;
+            } else {
+                combined_aabb = combined_aabb.merge(global_aabb);
+            }
+        }
+
+        // Recurse to children
+        for (int i = 0; i < node->get_child_count(); i++) {
+            collect_aabbs(node->get_child(i));
+        }
+    };
+
+    // Start collection from target node
+    collect_aabbs(target_node);
+
+    if (!has_aabb) {
+        return "{}";
+    }
+
+    // Build JSON with AABB data
+    Vector3 min_point = combined_aabb.position;
+    Vector3 max_point = combined_aabb.position + combined_aabb.size;
+    Vector3 center = combined_aabb.get_center();
+    Vector3 size = combined_aabb.size;
+
+    String result = "{";
+    result += "\"min\":[" + String::num(min_point.x) + "," + String::num(min_point.y) + "," + String::num(min_point.z) + "],";
+    result += "\"max\":[" + String::num(max_point.x) + "," + String::num(max_point.y) + "," + String::num(max_point.z) + "],";
+    result += "\"center\":[" + String::num(center.x) + "," + String::num(center.y) + "," + String::num(center.z) + "],";
+    result += "\"size\":[" + String::num(size.x) + "," + String::num(size.y) + "," + String::num(size.z) + "]";
+    result += "}";
+
+    return result;
+}
+
+String USDPlugin::_get_selection() {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "{}";
+    }
+
+    EditorSelection *selection = editor->get_selection();
+    if (!selection) {
+        return "{}";
+    }
+
+    TypedArray<Node> selected_nodes = selection->get_selected_nodes();
+
+    String result = "{";
+    result += "\"count\":" + String::num_int64(selected_nodes.size()) + ",";
+    result += "\"nodes\":[";
+
+    for (int i = 0; i < selected_nodes.size(); i++) {
+        Node *node = Object::cast_to<Node>(selected_nodes[i]);
+        if (node) {
+            if (i > 0) result += ",";
+            result += "{";
+            result += "\"name\":\"" + node->get_name() + "\",";
+            result += "\"type\":\"" + node->get_class() + "\",";
+            result += "\"path\":\"" + String(node->get_path()) + "\"";
+            result += "}";
+        }
+    }
+
+    result += "]}";
+    return result;
 }
 
 }

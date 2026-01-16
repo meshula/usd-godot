@@ -25,6 +25,14 @@ public:
     // Callback for querying scene tree (returns JSON string with node data)
     using QuerySceneCallback = std::function<std::string(const std::string& path)>;
 
+    // Callbacks for Phase 1 scene manipulation commands
+    using GetNodePropertiesCallback = std::function<std::string(const std::string& node_path)>;
+    using UpdateNodePropertyCallback = std::function<bool(const std::string& node_path, const std::string& property, const std::string& value)>;
+    using DuplicateNodeCallback = std::function<std::string(const std::string& node_path, const std::string& new_name)>;
+    using SaveSceneCallback = std::function<std::string(const std::string& path)>;
+    using GetBoundingBoxCallback = std::function<std::string(const std::string& node_path)>;
+    using GetSelectionCallback = std::function<std::string()>;
+
     McpServer();
     ~McpServer();
 
@@ -48,6 +56,14 @@ public:
 
     // Set callback for querying scene tree
     void set_query_scene_callback(QuerySceneCallback callback) { query_scene_callback_ = callback; }
+
+    // Set callbacks for Phase 1 scene manipulation commands
+    void set_get_node_properties_callback(GetNodePropertiesCallback callback) { get_node_properties_callback_ = callback; }
+    void set_update_node_property_callback(UpdateNodePropertyCallback callback) { update_node_property_callback_ = callback; }
+    void set_duplicate_node_callback(DuplicateNodeCallback callback) { duplicate_node_callback_ = callback; }
+    void set_save_scene_callback(SaveSceneCallback callback) { save_scene_callback_ = callback; }
+    void set_get_bounding_box_callback(GetBoundingBoxCallback callback) { get_bounding_box_callback_ = callback; }
+    void set_get_selection_callback(GetSelectionCallback callback) { get_selection_callback_ = callback; }
 
     // Process a JSON-RPC request and return the response
     // This is exposed for HTTP transport mode
@@ -85,6 +101,14 @@ private:
     // Handle DTACK polling for async operations
     std::string handle_dtack(const std::string& id, const std::string& request);
 
+    // Handle Godot scene manipulation commands (Phase 1)
+    std::string handle_get_node_properties(const std::string& id, const std::string& request);
+    std::string handle_update_node_property(const std::string& id, const std::string& request);
+    std::string handle_duplicate_node(const std::string& id, const std::string& request);
+    std::string handle_save_scene(const std::string& id, const std::string& request);
+    std::string handle_get_bounding_box(const std::string& id, const std::string& request);
+    std::string handle_get_selection(const std::string& id, const std::string& request);
+
     // Send a JSON-RPC response
     void send_response(const std::string& response);
 
@@ -114,6 +138,12 @@ private:
     LogCallback log_callback_;
     ImportCallback import_callback_;
     QuerySceneCallback query_scene_callback_;
+    GetNodePropertiesCallback get_node_properties_callback_;
+    UpdateNodePropertyCallback update_node_property_callback_;
+    DuplicateNodeCallback duplicate_node_callback_;
+    SaveSceneCallback save_scene_callback_;
+    GetBoundingBoxCallback get_bounding_box_callback_;
+    GetSelectionCallback get_selection_callback_;
 
     // Confirmation tokens for reflect operations (Phase 4)
     struct ReflectConfirmation {

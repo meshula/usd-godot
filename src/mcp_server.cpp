@@ -179,6 +179,18 @@ std::string McpServer::process_request_sync(const std::string& request) {
         return handle_query_scene_tree(id, request);
     } else if (method == "godot/dtack") {
         return handle_dtack(id, request);
+    } else if (method == "godot/get_node_properties") {
+        return handle_get_node_properties(id, request);
+    } else if (method == "godot/update_node_property") {
+        return handle_update_node_property(id, request);
+    } else if (method == "godot/duplicate_node") {
+        return handle_duplicate_node(id, request);
+    } else if (method == "godot/save_scene") {
+        return handle_save_scene(id, request);
+    } else if (method == "godot/get_bounding_box") {
+        return handle_get_bounding_box(id, request);
+    } else if (method == "godot/get_selection") {
+        return handle_get_selection(id, request);
     } else {
         // Method not found
         JsonValue error = JsonValue::object();
@@ -306,6 +318,42 @@ std::string McpServer::handle_initialize(const std::string& id) {
     tool14.set("name", JsonValue::string("godot/dtack"));
     tool14.set("description", JsonValue::string("Poll async operation status using ACK token. Returns status (pending/complete/error/canceled) and result data when complete. Pass 'cancel':true to cancel operation."));
     tools_array.push(tool14);
+
+    // godot/get_node_properties (Phase 1)
+    JsonValue tool15 = JsonValue::object();
+    tool15.set("name", JsonValue::string("godot/get_node_properties"));
+    tool15.set("description", JsonValue::string("Get all properties of a node in the scene. Returns property names and values as JSON. Params: node_path (relative to scene root)."));
+    tools_array.push(tool15);
+
+    // godot/update_node_property (Phase 1)
+    JsonValue tool16 = JsonValue::object();
+    tool16.set("name", JsonValue::string("godot/update_node_property"));
+    tool16.set("description", JsonValue::string("Update a property on a node. Params: node_path, property, value. Returns success confirmation."));
+    tools_array.push(tool16);
+
+    // godot/duplicate_node (Phase 1)
+    JsonValue tool17 = JsonValue::object();
+    tool17.set("name", JsonValue::string("godot/duplicate_node"));
+    tool17.set("description", JsonValue::string("Duplicate a node and all its children. Params: node_path, new_name (optional). Returns new node path."));
+    tools_array.push(tool17);
+
+    // godot/save_scene (Phase 1)
+    JsonValue tool18 = JsonValue::object();
+    tool18.set("name", JsonValue::string("godot/save_scene"));
+    tool18.set("description", JsonValue::string("Save the current scene. Params: path (optional, uses current scene path if empty). Returns saved scene path."));
+    tools_array.push(tool18);
+
+    // godot/get_bounding_box (Phase 1)
+    JsonValue tool19 = JsonValue::object();
+    tool19.set("name", JsonValue::string("godot/get_bounding_box"));
+    tool19.set("description", JsonValue::string("Get the axis-aligned bounding box (AABB) of a node and all its children. Params: node_path. Returns min/max bounds and size in world space."));
+    tools_array.push(tool19);
+
+    // godot/get_selection (Phase 1)
+    JsonValue tool20 = JsonValue::object();
+    tool20.set("name", JsonValue::string("godot/get_selection"));
+    tool20.set("description", JsonValue::string("Get the currently selected nodes in the Godot editor. No params required. Returns array of selected node paths and their types."));
+    tools_array.push(tool20);
 
     JsonValue tools_capability = JsonValue::object();
     tools_capability.set("tools", tools_array);
@@ -1351,6 +1399,203 @@ std::string McpServer::handle_dtack(const std::string& id, const std::string& re
         async_operations_.erase(it);
     }
 
+    return response.to_string();
+}
+
+// Phase 1 Scene Manipulation Commands
+
+std::string McpServer::handle_get_node_properties(const std::string& id, const std::string& request) {
+    std::string node_path = extract_string_param(request, "node_path");
+
+    if (node_path.empty()) {
+        return build_error(id, -32602, "Missing required parameter: node_path");
+    }
+
+    log_operation("godot/get_node_properties", "Getting properties for: " + node_path);
+
+    if (!get_node_properties_callback_) {
+        return build_error(id, -32603, "get_node_properties callback not set");
+    }
+
+    // Call the callback (which will use ACK/DTACK pattern internally if needed)
+    std::string properties_json = get_node_properties_callback_(node_path);
+
+    if (properties_json.empty() || properties_json == "{}") {
+        return build_error(id, -32603, "Node not found or has no properties: " + node_path);
+    }
+
+    // Parse the properties JSON and wrap in result
+    JsonValue result = JsonValue::object();
+    result.set("node_path", JsonValue::string(node_path));
+    result.set("properties", JsonValue::string(properties_json));  // Raw JSON string
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/get_node_properties", "Retrieved properties for: " + node_path);
+    return response.to_string();
+}
+
+std::string McpServer::handle_update_node_property(const std::string& id, const std::string& request) {
+    std::string node_path = extract_string_param(request, "node_path");
+    std::string property = extract_string_param(request, "property");
+    std::string value = extract_string_param(request, "value");
+
+    if (node_path.empty() || property.empty()) {
+        return build_error(id, -32602, "Missing required parameters: node_path and property");
+    }
+
+    log_operation("godot/update_node_property", "Updating " + node_path + "." + property + " = " + value);
+
+    if (!update_node_property_callback_) {
+        return build_error(id, -32603, "update_node_property callback not set");
+    }
+
+    bool success = update_node_property_callback_(node_path, property, value);
+
+    if (!success) {
+        return build_error(id, -32603, "Failed to update property: " + property + " on node: " + node_path);
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("node_path", JsonValue::string(node_path));
+    result.set("property", JsonValue::string(property));
+    result.set("value", JsonValue::string(value));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/update_node_property", "Updated " + property + " on " + node_path);
+    return response.to_string();
+}
+
+std::string McpServer::handle_duplicate_node(const std::string& id, const std::string& request) {
+    std::string node_path = extract_string_param(request, "node_path");
+    std::string new_name = extract_string_param(request, "new_name");
+
+    if (node_path.empty()) {
+        return build_error(id, -32602, "Missing required parameter: node_path");
+    }
+
+    log_operation("godot/duplicate_node", "Duplicating: " + node_path + " as " + new_name);
+
+    if (!duplicate_node_callback_) {
+        return build_error(id, -32603, "duplicate_node callback not set");
+    }
+
+    std::string new_node_path = duplicate_node_callback_(node_path, new_name);
+
+    if (new_node_path.empty()) {
+        return build_error(id, -32603, "Failed to duplicate node: " + node_path);
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("original_path", JsonValue::string(node_path));
+    result.set("new_path", JsonValue::string(new_node_path));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/duplicate_node", "Duplicated to: " + new_node_path);
+    return response.to_string();
+}
+
+std::string McpServer::handle_save_scene(const std::string& id, const std::string& request) {
+    std::string path = extract_string_param(request, "path");
+
+    log_operation("godot/save_scene", "Saving scene" + (path.empty() ? "" : " to: " + path));
+
+    if (!save_scene_callback_) {
+        return build_error(id, -32603, "save_scene callback not set");
+    }
+
+    std::string saved_path = save_scene_callback_(path);
+
+    if (saved_path.empty()) {
+        return build_error(id, -32603, "Failed to save scene");
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("scene_path", JsonValue::string(saved_path));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/save_scene", "Saved to: " + saved_path);
+    return response.to_string();
+}
+
+std::string McpServer::handle_get_bounding_box(const std::string& id, const std::string& request) {
+    std::string node_path = extract_string_param(request, "node_path");
+
+    if (node_path.empty()) {
+        return build_error(id, -32602, "Missing required parameter: node_path");
+    }
+
+    log_operation("godot/get_bounding_box", "Getting bounding box for: " + node_path);
+
+    if (!get_bounding_box_callback_) {
+        return build_error(id, -32603, "get_bounding_box callback not set");
+    }
+
+    std::string bbox_json = get_bounding_box_callback_(node_path);
+
+    if (bbox_json.empty() || bbox_json == "{}") {
+        return build_error(id, -32603, "Node not found or has no bounding box: " + node_path);
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("node_path", JsonValue::string(node_path));
+    result.set("bounding_box", JsonValue::string(bbox_json));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/get_bounding_box", "Retrieved bounding box for: " + node_path);
+    return response.to_string();
+}
+
+std::string McpServer::handle_get_selection(const std::string& id, const std::string& request) {
+    log_operation("godot/get_selection", "Getting editor selection");
+
+    if (!get_selection_callback_) {
+        return build_error(id, -32603, "Selection callback not set");
+    }
+
+    std::string selection_json = get_selection_callback_();
+
+    if (selection_json.empty()) {
+        return build_error(id, -32603, "Failed to get selection");
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("selection", JsonValue::string(selection_json));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("godot/get_selection", "Retrieved editor selection");
     return response.to_string();
 }
 
