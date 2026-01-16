@@ -8,6 +8,8 @@
 #include "mcp_server.h"
 #include "mcp_http_server.h"
 #include "mcp_control_panel.h"
+#include "usd_stage_group_mapping.h"
+#include "usd_stage_manager_panel.h"
 
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -149,8 +151,15 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<UsdStageProxy>();
         ClassDB::register_class<UsdPrimProxy>();
         ClassDB::register_class<McpControlPanel>();
+        ClassDB::register_class<UsdStageManagerPanel>();
 
         UtilityFunctions::print("USD-Godot: Classes registered");
+
+        // Initialize USD Stage Group Mapping singleton
+        UsdStageGroupMapping::get_singleton();
+
+        // Load USD stage registry (lazy loading)
+        usd_godot::UsdStageManager::get_singleton().load_stage_registry();
 
         // Create MCP server instance (used by both stdio and HTTP modes)
         s_mcp_server = new mcp::McpServer();

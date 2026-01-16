@@ -8,6 +8,8 @@
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 
+#include "usd_stage_manager.h"
+
 // USD headers
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/prim.h>
@@ -24,6 +26,9 @@ class UsdPrimProxy;
  * This class provides a GDScript-friendly interface to USD stages,
  * abstracting away C++ details and providing Godot-native types.
  *
+ * Now uses the shared UsdStageManager, enabling seamless cooperation
+ * between GDScript and MCP server operations on the same stages.
+ *
  * Example GDScript usage:
  *   var stage = UsdStageProxy.new()
  *   stage.open("res://assets/model.usda")
@@ -35,9 +40,8 @@ class UsdStageProxy : public RefCounted {
     GDCLASS(UsdStageProxy, RefCounted);
 
 private:
-    UsdStageRefPtr _stage;
+    usd_godot::StageId _stage_id;
     String _file_path;
-    bool _is_modified;
     double _current_time_code;
 
 protected:
@@ -115,6 +119,38 @@ public:
     Error remove_prim(const String &p_path);
 
     // -------------------------------------------------------------------------
+    // Prim Attributes and Transforms (Shared with MCP)
+    // -------------------------------------------------------------------------
+
+    /// Set an attribute on a prim. Returns OK on success.
+    /// Type examples: "string", "float", "double", "int", "bool"
+    Error set_prim_attribute(const String &p_prim_path, const String &p_attr_name,
+                             const String &p_value_type, const String &p_value);
+
+    /// Get an attribute value from a prim. Returns Dictionary with "value" and "type" keys.
+    Dictionary get_prim_attribute(const String &p_prim_path, const String &p_attr_name) const;
+
+    /// Set transform (translation, rotation, scale) on a prim. Returns OK on success.
+    /// Rotation is in degrees (Euler XYZ order).
+    Error set_prim_transform(const String &p_prim_path,
+                             double p_tx, double p_ty, double p_tz,
+                             double p_rx, double p_ry, double p_rz,
+                             double p_sx, double p_sy, double p_sz);
+
+    /// List all prim paths in the stage. Returns PackedStringArray.
+    PackedStringArray list_prims() const;
+
+    // -------------------------------------------------------------------------
+    // Shared State (MCP Interop)
+    // -------------------------------------------------------------------------
+
+    /// Get the stage ID for MCP interop. Returns 0 if stage is not open.
+    int64_t get_stage_id() const;
+
+    /// Get the generation number (tracks modifications). Returns 0 if stage is not open.
+    int64_t get_generation() const;
+
+    // -------------------------------------------------------------------------
     // Time / Animation
     // -------------------------------------------------------------------------
 
@@ -186,8 +222,9 @@ public:
     // Internal Access (for advanced users)
     // -------------------------------------------------------------------------
 
-    /// Get the raw USD stage pointer. For advanced C++ interop only.
-    UsdStageRefPtr get_stage_ptr() const { return _stage; }
+    /// Get the underlying StageRecord for advanced C++ operations.
+    /// Returns nullptr if stage is not open.
+    usd_godot::StageRecord* get_stage_record() const;
 };
 
 } // namespace godot

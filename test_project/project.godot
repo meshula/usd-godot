@@ -11,8 +11,9 @@ config_version=5
 [application]
 
 config/name="USD MCP Test"
-config/features=PackedStringArray("4.4")
+run/main_scene="res://test_scene.tscn"
+config/features=PackedStringArray("4.5")
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot-usd/plugin.gd")
+enabled=PackedStringArray()

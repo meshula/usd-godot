@@ -128,6 +128,10 @@ set(SOURCES
     src/mcp_control_panel.h
     src/mcp_globals.h
     src/mcp_json.h
+    src/usd_stage_group_mapping.cpp
+    src/usd_stage_group_mapping.h
+    src/usd_stage_manager_panel.cpp
+    src/usd_stage_manager_panel.h
     src/version.h
 )
 
@@ -225,22 +229,3 @@ install(DIRECTORY bin/
     DESTINATION lib
 )
 
-# Create addon structure
-install(DIRECTORY DESTINATION addons/godot-usd)
-install(FILES
-    plugin.cfg
-    plugin.gd
-    DESTINATION addons/godot-usd
-)
-
-# Create a modified gdextension file for the addon that points to the correct location
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/godot-usd.gdextension
-    ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
-    COPYONLY
-)
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/godot-usd-addon.gdextension
-    DESTINATION addons/godot-usd
-    RENAME godot-usd.gdextension
-)

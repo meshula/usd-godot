@@ -10,6 +10,8 @@
 #include <pxr/base/gf/rotation.h>
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
 
 using namespace godot;
 
@@ -213,6 +215,26 @@ bool StageRecord::set_transform(const std::string& prim_path,
     return success;
 }
 
+// Lazy loading support
+UsdStageRefPtr StageRecord::ensure_stage() {
+    if (!stage_ && !file_path_.empty()) {
+        UtilityFunctions::print("UsdStageManager: Lazy loading stage from ", String(file_path_.c_str()));
+        stage_ = UsdStage::Open(file_path_);
+        if (stage_) {
+            is_loaded_ = true;
+        }
+    }
+    return stage_;
+}
+
+void StageRecord::unload() {
+    if (stage_) {
+        UtilityFunctions::print("UsdStageManager: Unloading stage ", String(file_path_.c_str()));
+        stage_ = nullptr;
+        is_loaded_ = false;
+    }
+}
+
 // ============================================================================
 // UsdStageManager Implementation
 // ============================================================================
@@ -241,11 +263,12 @@ StageId UsdStageManager::create_stage(const std::string& file_path) {
     }
 
     StageId id = next_id_++;
-    stages_.emplace(id, StageRecord(stage));
+    stages_.emplace(id, StageRecord(stage, file_path));
 
     UtilityFunctions::print(String("UsdStageManager: Created stage with ID ") + String::num_int64(id) +
                            (file_path.empty() ? String(" (in-memory)") : String(" at ") + String(file_path.c_str())));
 
+    save_stage_registry();
     return id;
 }
 
@@ -260,11 +283,12 @@ StageId UsdStageManager::open_stage(const std::string& file_path) {
     }
 
     StageId id = next_id_++;
-    stages_.emplace(id, StageRecord(stage));
+    stages_.emplace(id, StageRecord(stage, file_path));
 
     UtilityFunctions::print(String("UsdStageManager: Opened stage with ID ") + String::num_int64(id) +
                            String(" from ") + String(file_path.c_str()));
 
+    save_stage_registry();
     return id;
 }
 
@@ -463,6 +487,117 @@ std::vector<std::string> UsdStageManager::list_prims(StageId id) {
     }
 
     return prim_paths;
+}
+
+// Registry persistence for lazy loading
+StageId UsdStageManager::register_stage(const std::string& file_path, uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    StageId id = next_id_++;
+    stages_.emplace(id, StageRecord(file_path, generation));
+
+    UtilityFunctions::print(String("UsdStageManager: Registered stage (not loaded) ID ") + String::num_int64(id) +
+                           String(" from ") + String(file_path.c_str()));
+
+    save_stage_registry();
+    return id;
+}
+
+bool UsdStageManager::save_stage_registry() {
+    // Save to user:// directory
+    godot::String registry_path = "user://usd_stage_registry.json";
+
+    godot::Ref<godot::FileAccess> file = godot::FileAccess::open(registry_path, godot::FileAccess::WRITE);
+    if (!file.is_valid()) {
+        UtilityFunctions::printerr("UsdStageManager: Failed to save stage registry to ", registry_path);
+        return false;
+    }
+
+    // Build JSON structure
+    godot::Dictionary root;
+    godot::Array stages_array;
+
+    for (const auto& pair : stages_) {
+        godot::Dictionary stage_entry;
+        stage_entry["stage_id"] = static_cast<int64_t>(pair.first);
+        stage_entry["file_path"] = godot::String(pair.second.get_file_path().c_str());
+        stage_entry["generation"] = static_cast<int64_t>(pair.second.get_generation());
+        stages_array.push_back(stage_entry);
+    }
+
+    root["stages"] = stages_array;
+    root["version"] = 1;
+    root["next_id"] = static_cast<int64_t>(next_id_);
+
+    // Convert to JSON
+    godot::Ref<godot::JSON> json;
+    json.instantiate();
+    godot::String json_string = json->stringify(root, "  ");
+
+    file->store_string(json_string);
+    file->close();
+
+    UtilityFunctions::print("UsdStageManager: Saved ", static_cast<int64_t>(stages_.size()), " stages to registry");
+    return true;
+}
+
+bool UsdStageManager::load_stage_registry() {
+    godot::String registry_path = "user://usd_stage_registry.json";
+
+    godot::Ref<godot::FileAccess> file = godot::FileAccess::open(registry_path, godot::FileAccess::READ);
+    if (!file.is_valid()) {
+        UtilityFunctions::print("UsdStageManager: No existing registry file (first run)");
+        return false;
+    }
+
+    godot::String json_string = file->get_as_text();
+    file->close();
+
+    if (json_string.is_empty()) {
+        UtilityFunctions::print("UsdStageManager: Empty registry file");
+        return false;
+    }
+
+    // Parse JSON
+    godot::Ref<godot::JSON> json;
+    json.instantiate();
+    godot::Error parse_error = json->parse(json_string);
+    if (parse_error != godot::OK) {
+        UtilityFunctions::printerr("UsdStageManager: Failed to parse registry JSON");
+        return false;
+    }
+
+    godot::Dictionary root = json->get_data();
+    if (!root.has("stages")) {
+        UtilityFunctions::printerr("UsdStageManager: Invalid registry format");
+        return false;
+    }
+
+    // Restore next_id
+    if (root.has("next_id")) {
+        next_id_ = static_cast<StageId>(static_cast<int64_t>(root["next_id"]));
+    }
+
+    // Load stages (lazy - don't open them yet)
+    godot::Array stages_array = root["stages"];
+    stages_.clear();
+
+    for (int i = 0; i < stages_array.size(); i++) {
+        godot::Dictionary stage_entry = stages_array[i];
+        if (stage_entry.has("stage_id") && stage_entry.has("file_path")) {
+            StageId stage_id = static_cast<StageId>(static_cast<int64_t>(stage_entry["stage_id"]));
+            godot::String file_path = stage_entry["file_path"];
+            uint64_t generation = stage_entry.has("generation") ?
+                static_cast<uint64_t>(static_cast<int64_t>(stage_entry["generation"])) : 0;
+
+            std::string file_path_str = file_path.utf8().get_data();
+            stages_.emplace(stage_id, StageRecord(file_path_str, generation));
+        }
+    }
+
+    UtilityFunctions::print("UsdStageManager: Loaded ", static_cast<int64_t>(stages_.size()),
+                           " stage entries from registry (not opened yet)");
+    return true;
 }
 
 } // namespace usd_godot

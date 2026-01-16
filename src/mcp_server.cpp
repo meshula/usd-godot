@@ -3,9 +3,13 @@
 #include "mcp_globals.h"
 #include "version.h"
 #include "usd_stage_manager.h"
+#include "usd_stage_group_mapping.h"
 
 #include <pxr/pxr.h>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <sstream>
@@ -163,6 +167,18 @@ std::string McpServer::process_request_sync(const std::string& request) {
         return handle_set_transform(id, request);
     } else if (method == "usd/list_prims") {
         return handle_list_prims(id, request);
+    } else if (method == "usd/list_stages") {
+        return handle_list_stages(id, request);
+    } else if (method == "usd/create_scene_group") {
+        return handle_create_scene_group(id, request);
+    } else if (method == "usd/reflect_to_scene") {
+        return handle_reflect_to_scene(id, request);
+    } else if (method == "usd/confirm_reflect") {
+        return handle_confirm_reflect(id, request);
+    } else if (method == "godot/query_scene_tree") {
+        return handle_query_scene_tree(id, request);
+    } else if (method == "godot/dtack") {
+        return handle_dtack(id, request);
     } else {
         // Method not found
         JsonValue error = JsonValue::object();
@@ -254,6 +270,42 @@ std::string McpServer::handle_initialize(const std::string& id) {
     tool8.set("name", JsonValue::string("usd/list_prims"));
     tool8.set("description", JsonValue::string("List all prims in a stage"));
     tools_array.push(tool8);
+
+    // usd/list_stages (Phase 4)
+    JsonValue tool9 = JsonValue::object();
+    tool9.set("name", JsonValue::string("usd/list_stages"));
+    tool9.set("description", JsonValue::string("List all open USD stages with their file paths, generations, and group mappings"));
+    tools_array.push(tool9);
+
+    // usd/create_scene_group
+    JsonValue tool10 = JsonValue::object();
+    tool10.set("name", JsonValue::string("usd/create_scene_group"));
+    tool10.set("description", JsonValue::string("Associate a USD file with a scene group name for importing"));
+    tools_array.push(tool10);
+
+    // usd/reflect_to_scene
+    JsonValue tool11 = JsonValue::object();
+    tool11.set("name", JsonValue::string("usd/reflect_to_scene"));
+    tool11.set("description", JsonValue::string("Import a USD stage to the current scene as a group. Returns confirmation token if group exists."));
+    tools_array.push(tool11);
+
+    // usd/confirm_reflect
+    JsonValue tool12 = JsonValue::object();
+    tool12.set("name", JsonValue::string("usd/confirm_reflect"));
+    tool12.set("description", JsonValue::string("Confirm a pending reflect operation using the confirmation token"));
+    tools_array.push(tool12);
+
+    // godot/query_scene_tree
+    JsonValue tool13 = JsonValue::object();
+    tool13.set("name", JsonValue::string("godot/query_scene_tree"));
+    tool13.set("description", JsonValue::string("Query the Godot scene tree at a specific path (ACK/DTACK pattern). Returns ACK token immediately. Poll with godot/dtack to get results."));
+    tools_array.push(tool13);
+
+    // godot/dtack
+    JsonValue tool14 = JsonValue::object();
+    tool14.set("name", JsonValue::string("godot/dtack"));
+    tool14.set("description", JsonValue::string("Poll async operation status using ACK token. Returns status (pending/complete/error/canceled) and result data when complete. Pass 'cancel':true to cancel operation."));
+    tools_array.push(tool14);
 
     JsonValue tools_capability = JsonValue::object();
     tools_capability.set("tools", tools_array);
@@ -506,6 +558,52 @@ double McpServer::extract_double_param(const std::string& request, const std::st
     } catch (...) {
         return 0.0;
     }
+}
+
+bool McpServer::extract_bool_param(const std::string& request, const std::string& param_name) {
+    // Look for "param_name":true or "param_name":false pattern
+    std::string search = "\"" + param_name + "\"";
+    size_t param_pos = request.find(search);
+    if (param_pos == std::string::npos) {
+        return false;
+    }
+
+    size_t colon_pos = request.find(':', param_pos);
+    if (colon_pos == std::string::npos) {
+        return false;
+    }
+
+    // Skip whitespace
+    size_t value_start = colon_pos + 1;
+    while (value_start < request.length() && std::isspace(request[value_start])) {
+        value_start++;
+    }
+
+    if (value_start >= request.length()) {
+        return false;
+    }
+
+    // Check for "true" or "false"
+    if (request.substr(value_start, 4) == "true") {
+        return true;
+    }
+    if (request.substr(value_start, 5) == "false") {
+        return false;
+    }
+
+    // Also check for 1 or 0
+    if (request[value_start] == '1') {
+        return true;
+    }
+    if (request[value_start] == '0') {
+        return false;
+    }
+
+    return false;
+}
+
+std::string McpServer::generate_ack_token() {
+    return "ack_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
 }
 
 std::string McpServer::handle_create_stage(const std::string& id, const std::string& request) {
@@ -860,6 +958,398 @@ std::string McpServer::handle_list_prims(const std::string& id, const std::strin
 
     UtilityFunctions::print(String("MCP Server: Listed ") + String::num_int64(prim_paths.size()) +
                            String(" prims in stage ") + String::num_int64(stage_id));
+
+    return response.to_string();
+}
+
+// Phase 4: USD Stage Manager Panel Commands
+
+std::string McpServer::handle_list_stages(const std::string& id, const std::string& request) {
+    log_operation("usd/list_stages", "Listing all USD stages");
+
+    usd_godot::UsdStageManager& manager = usd_godot::UsdStageManager::get_singleton();
+    godot::UsdStageGroupMapping* mapping = godot::UsdStageGroupMapping::get_singleton();
+
+    std::vector<usd_godot::StageId> active_stages = manager.get_active_stages();
+
+    JsonValue stages_array = JsonValue::array();
+
+    for (size_t i = 0; i < active_stages.size(); i++) {
+        usd_godot::StageId stage_id = active_stages[i];
+        usd_godot::StageRecord* record = manager.get_stage_record(stage_id);
+        if (!record) continue;
+
+        uint64_t generation = record->get_generation();
+        bool is_loaded = record->is_loaded();
+
+        // Get file path from record (works whether stage is loaded or not)
+        std::string file_path = record->get_file_path();
+        godot::String godot_file_path(file_path.c_str());
+
+        // Check mapping status
+        bool has_mapping = mapping && mapping->has_mapping(godot_file_path);
+        std::string group_name;
+        bool needs_update = false;
+
+        if (has_mapping) {
+            godot::String gname = mapping->get_group_name(godot_file_path);
+            group_name = gname.utf8().get_data();
+            needs_update = mapping->needs_update(godot_file_path, generation);
+        }
+
+        std::string status = !is_loaded ? "not_loaded" :
+                           (!has_mapping ? "not_reflected" :
+                           (needs_update ? "modified" : "up_to_date"));
+
+        JsonValue stage_info = JsonValue::object();
+        stage_info.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+        stage_info.set("file_path", JsonValue::string(file_path));
+        stage_info.set("generation", JsonValue::number(static_cast<double>(generation)));
+        stage_info.set("group_name", JsonValue::string(has_mapping ? group_name : ""));
+        stage_info.set("status", JsonValue::string(status));
+
+        stages_array.push(stage_info);
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("stages", stages_array);
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("usd/list_stages", "Found " + std::to_string(active_stages.size()) + " stages");
+    return response.to_string();
+}
+
+std::string McpServer::handle_create_scene_group(const std::string& id, const std::string& request) {
+    std::string file_path = extract_string_param(request, "file_path");
+    std::string group_name = extract_string_param(request, "group_name");
+
+    if (file_path.empty() || group_name.empty()) {
+        return build_error(id, -32602, "Missing required parameters: file_path and group_name");
+    }
+
+    log_operation("usd/create_scene_group", "Creating mapping and registering stage: " + file_path + " -> " + group_name);
+
+    godot::UsdStageGroupMapping* mapping = godot::UsdStageGroupMapping::get_singleton();
+    if (!mapping) {
+        return build_error(id, -32603, "UsdStageGroupMapping not available");
+    }
+
+    godot::String godot_file_path(file_path.c_str());
+    godot::String godot_group_name(group_name.c_str());
+
+    // Register the stage in the manager (but don't load it yet)
+    usd_godot::UsdStageManager& manager = usd_godot::UsdStageManager::get_singleton();
+    usd_godot::StageId stage_id = manager.register_stage(file_path);
+
+    // Create the mapping
+    mapping->set_mapping(godot_file_path, godot_group_name);
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("stage_id", JsonValue::number(static_cast<double>(stage_id)));
+    result.set("file_path", JsonValue::string(file_path));
+    result.set("group_name", JsonValue::string(group_name));
+    result.set("status", JsonValue::string("ready_to_reflect"));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("usd/create_scene_group", "Stage registered (ID " + std::to_string(stage_id) + ") and mapping created successfully");
+    return response.to_string();
+}
+
+std::string McpServer::handle_reflect_to_scene(const std::string& id, const std::string& request) {
+    std::string file_path = extract_string_param(request, "file_path");
+    bool force = extract_bool_param(request, "force");
+
+    if (file_path.empty()) {
+        return build_error(id, -32602, "Missing required parameter: file_path");
+    }
+
+    log_operation("usd/reflect_to_scene", "Reflecting " + file_path + " (force=" + (force ? "true" : "false") + ")");
+
+    godot::UsdStageGroupMapping* mapping = godot::UsdStageGroupMapping::get_singleton();
+    if (!mapping) {
+        return build_error(id, -32603, "UsdStageGroupMapping not available");
+    }
+
+    godot::String godot_file_path(file_path.c_str());
+
+    if (!mapping->has_mapping(godot_file_path)) {
+        return build_error(id, -32603, "No group mapping for this file. Create one with usd/create_scene_group first.");
+    }
+
+    godot::String group_name = mapping->get_group_name(godot_file_path);
+    std::string group_name_str = group_name.utf8().get_data();
+
+    // TODO: Check if group exists with nodes (for now, just return confirmation_required)
+    // This will be fully implemented in Phase 5 when we integrate with USDPlugin
+
+    if (!force) {
+        // Generate confirmation token
+        std::string token = "reflect_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+
+        {
+            std::lock_guard<std::mutex> lock(confirmations_mutex_);
+            pending_confirmations_[token] = {file_path, group_name_str};
+        }
+
+        JsonValue result = JsonValue::object();
+        result.set("status", JsonValue::string("confirmation_required"));
+        result.set("message", JsonValue::string("Group '" + group_name_str + "' may already exist. Use usd/confirm_reflect with token to proceed."));
+        result.set("file_path", JsonValue::string(file_path));
+        result.set("group_name", JsonValue::string(group_name_str));
+        result.set("confirmation_token", JsonValue::string(token));
+        add_metadata_to_result(result);
+
+        JsonValue response = JsonValue::object();
+        response.set("jsonrpc", JsonValue::string("2.0"));
+        response.set("id", JsonValue::string(id));
+        response.set("result", result);
+
+        log_operation("usd/reflect_to_scene", "Confirmation required for " + group_name_str);
+        return response.to_string();
+    }
+
+    // Force mode - proceed directly with import
+    if (!import_callback_) {
+        return build_error(id, -32603, "Import functionality not available");
+    }
+
+    // Call import callback (runs on main thread via call_deferred)
+    int node_count = import_callback_(file_path, group_name_str, true);
+
+    if (node_count < 0) {
+        return build_error(id, -32603, "Failed to import USD to scene");
+    }
+
+    // Update generation after successful import
+    usd_godot::UsdStageManager& manager = usd_godot::UsdStageManager::get_singleton();
+    uint64_t generation = 0;
+
+    // Find stage by file path
+    std::vector<usd_godot::StageId> stages = manager.get_active_stages();
+    for (usd_godot::StageId stage_id : stages) {
+        usd_godot::StageRecord* record = manager.get_stage_record(stage_id);
+        if (record && record->get_file_path() == file_path) {
+            generation = record->get_generation();
+            break;
+        }
+    }
+
+    mapping->update_generation(godot_file_path, generation);
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("file_path", JsonValue::string(file_path));
+    result.set("group_name", JsonValue::string(group_name_str));
+    result.set("nodes_created", JsonValue::number(static_cast<double>(node_count)));
+    result.set("generation", JsonValue::number(static_cast<double>(generation)));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("usd/reflect_to_scene", "Imported " + std::to_string(node_count) + " nodes to group '" + group_name_str + "'");
+    return response.to_string();
+}
+
+std::string McpServer::handle_confirm_reflect(const std::string& id, const std::string& request) {
+    std::string token = extract_string_param(request, "confirmation_token");
+
+    if (token.empty()) {
+        return build_error(id, -32602, "Missing required parameter: confirmation_token");
+    }
+
+    log_operation("usd/confirm_reflect", "Confirming with token: " + token);
+
+    ReflectConfirmation confirmation;
+    {
+        std::lock_guard<std::mutex> lock(confirmations_mutex_);
+        auto it = pending_confirmations_.find(token);
+        if (it == pending_confirmations_.end()) {
+            return build_error(id, -32603, "Invalid or expired confirmation token");
+        }
+        confirmation = it->second;
+        pending_confirmations_.erase(it);
+    }
+
+    // Execute actual import
+    if (!import_callback_) {
+        return build_error(id, -32603, "Import functionality not available");
+    }
+
+    // Call import callback with force=true (user already confirmed)
+    int node_count = import_callback_(confirmation.file_path, confirmation.group_name, true);
+
+    if (node_count < 0) {
+        return build_error(id, -32603, "Failed to import USD to scene");
+    }
+
+    // Update generation after successful import
+    usd_godot::UsdStageManager& manager = usd_godot::UsdStageManager::get_singleton();
+    godot::UsdStageGroupMapping* mapping = godot::UsdStageGroupMapping::get_singleton();
+    uint64_t generation = 0;
+
+    // Find stage by file path
+    std::vector<usd_godot::StageId> stages = manager.get_active_stages();
+    for (usd_godot::StageId stage_id : stages) {
+        usd_godot::StageRecord* record = manager.get_stage_record(stage_id);
+        if (record && record->get_file_path() == confirmation.file_path) {
+            generation = record->get_generation();
+            break;
+        }
+    }
+
+    if (mapping) {
+        godot::String godot_file_path(confirmation.file_path.c_str());
+        mapping->update_generation(godot_file_path, generation);
+    }
+
+    JsonValue result = JsonValue::object();
+    result.set("success", JsonValue::boolean(true));
+    result.set("file_path", JsonValue::string(confirmation.file_path));
+    result.set("group_name", JsonValue::string(confirmation.group_name));
+    result.set("nodes_created", JsonValue::number(static_cast<double>(node_count)));
+    result.set("generation", JsonValue::number(static_cast<double>(generation)));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    log_operation("usd/confirm_reflect", "Imported " + std::to_string(node_count) + " nodes to group '" + confirmation.group_name + "'");
+    return response.to_string();
+}
+
+std::string McpServer::handle_query_scene_tree(const std::string& id, const std::string& request) {
+    std::string path = extract_string_param(request, "path");
+
+    // Default to "/" for root if no path specified
+    if (path.empty()) {
+        path = "/";
+    }
+
+    log_operation("godot/query_scene_tree", "ACK: Querying scene tree at path: " + path);
+
+    // Generate ACK token
+    std::string ack = generate_ack_token();
+
+    // Create async operation
+    AsyncOperation op;
+    op.ack_token = ack;
+    op.status = "pending";
+    op.message = "Querying scene tree at " + path;
+    op.result_data = "";
+
+    // Store operation
+    {
+        std::lock_guard<std::mutex> lock(async_operations_mutex_);
+        async_operations_[ack] = op;
+    }
+
+    // Schedule query on main thread via callback
+    if (query_scene_callback_) {
+        // Use callback to schedule work on main thread
+        // The callback will update the async_operations_ map when done
+        std::thread([this, ack, path]() {
+            try {
+                std::string result = query_scene_callback_(path);
+
+                std::lock_guard<std::mutex> lock(async_operations_mutex_);
+                auto it = async_operations_.find(ack);
+                if (it != async_operations_.end()) {
+                    if (it->second.status != "canceled") {
+                        it->second.status = "complete";
+                        it->second.result_data = result;
+                        it->second.message = "Query complete";
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(async_operations_mutex_);
+                auto it = async_operations_.find(ack);
+                if (it != async_operations_.end()) {
+                    it->second.status = "error";
+                    it->second.message = std::string("Query failed: ") + e.what();
+                }
+            }
+        }).detach();
+    }
+
+    // Return ACK immediately
+    JsonValue result = JsonValue::object();
+    result.set("ack", JsonValue::string(ack));
+    result.set("message", JsonValue::string(op.message));
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    return response.to_string();
+}
+
+std::string McpServer::handle_dtack(const std::string& id, const std::string& request) {
+    std::string ack = extract_string_param(request, "ack");
+    bool cancel = extract_bool_param(request, "cancel");
+
+    if (ack.empty()) {
+        return build_error(id, -32602, "Missing required parameter: ack");
+    }
+
+    log_operation("godot/dtack", "Polling ACK: " + ack + (cancel ? " (cancel)" : ""));
+
+    std::lock_guard<std::mutex> lock(async_operations_mutex_);
+    auto it = async_operations_.find(ack);
+
+    if (it == async_operations_.end()) {
+        return build_error(id, -32603, "Invalid or expired ACK token");
+    }
+
+    AsyncOperation& op = it->second;
+
+    // Handle cancellation
+    if (cancel) {
+        if (op.cancel_callback) {
+            op.cancel_callback();
+        }
+        op.status = "canceled";
+        op.message = "Operation canceled";
+    }
+
+    // Build response
+    JsonValue result = JsonValue::object();
+    result.set("ack", JsonValue::string(ack));
+    result.set("status", JsonValue::string(op.status));
+    result.set("message", JsonValue::string(op.message));
+
+    if (op.status == "complete" && !op.result_data.empty()) {
+        result.set("data", JsonValue::string(op.result_data));
+    }
+
+    add_metadata_to_result(result);
+
+    JsonValue response = JsonValue::object();
+    response.set("jsonrpc", JsonValue::string("2.0"));
+    response.set("id", JsonValue::string(id));
+    response.set("result", result);
+
+    // Remove from map if complete, error, or canceled
+    if (op.status != "pending") {
+        async_operations_.erase(it);
+    }
 
     return response.to_string();
 }

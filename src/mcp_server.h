@@ -7,6 +7,7 @@
 #include <mutex>
 #include <iostream>
 #include <functional>
+#include <map>
 
 namespace mcp {
 
@@ -17,6 +18,12 @@ class McpServer {
 public:
     // Callback for logging operations to control panel
     using LogCallback = std::function<void(const std::string&, const std::string&)>;
+
+    // Callback for importing USD to scene group (returns node count on success, -1 on failure)
+    using ImportCallback = std::function<int(const std::string& file_path, const std::string& group_name, bool force)>;
+
+    // Callback for querying scene tree (returns JSON string with node data)
+    using QuerySceneCallback = std::function<std::string(const std::string& path)>;
 
     McpServer();
     ~McpServer();
@@ -35,6 +42,12 @@ public:
 
     // Set callback for operation logging
     void set_log_callback(LogCallback callback) { log_callback_ = callback; }
+
+    // Set callback for importing USD to scene
+    void set_import_callback(ImportCallback callback) { import_callback_ = callback; }
+
+    // Set callback for querying scene tree
+    void set_query_scene_callback(QuerySceneCallback callback) { query_scene_callback_ = callback; }
 
     // Process a JSON-RPC request and return the response
     // This is exposed for HTTP transport mode
@@ -60,6 +73,18 @@ private:
     std::string handle_set_transform(const std::string& id, const std::string& request);
     std::string handle_list_prims(const std::string& id, const std::string& request);
 
+    // Handle USD Stage Manager Panel commands (Phase 4)
+    std::string handle_list_stages(const std::string& id, const std::string& request);
+    std::string handle_create_scene_group(const std::string& id, const std::string& request);
+    std::string handle_reflect_to_scene(const std::string& id, const std::string& request);
+    std::string handle_confirm_reflect(const std::string& id, const std::string& request);
+
+    // Handle Godot scene tree query (ACK/DTACK pattern)
+    std::string handle_query_scene_tree(const std::string& id, const std::string& request);
+
+    // Handle DTACK polling for async operations
+    std::string handle_dtack(const std::string& id, const std::string& request);
+
     // Send a JSON-RPC response
     void send_response(const std::string& response);
 
@@ -79,6 +104,7 @@ private:
     std::string extract_string_param(const std::string& request, const std::string& param_name);
     int64_t extract_int_param(const std::string& request, const std::string& param_name);
     double extract_double_param(const std::string& request, const std::string& param_name);
+    bool extract_bool_param(const std::string& request, const std::string& param_name);
 
     std::thread server_thread_;
     std::atomic<bool> running_;
@@ -86,6 +112,30 @@ private:
     bool plugin_registered_;
     std::mutex io_mutex_;
     LogCallback log_callback_;
+    ImportCallback import_callback_;
+    QuerySceneCallback query_scene_callback_;
+
+    // Confirmation tokens for reflect operations (Phase 4)
+    struct ReflectConfirmation {
+        std::string file_path;
+        std::string group_name;
+    };
+    std::map<std::string, ReflectConfirmation> pending_confirmations_;
+    std::mutex confirmations_mutex_;
+
+    // ACK/DTACK async operation tracking
+    struct AsyncOperation {
+        std::string ack_token;
+        std::string status;  // "pending", "complete", "error", "canceled"
+        std::string message;
+        std::string result_data;  // JSON string with actual results
+        std::function<void()> cancel_callback;  // Optional cancellation
+    };
+    std::map<std::string, AsyncOperation> async_operations_;
+    std::mutex async_operations_mutex_;
+
+    // Helper to generate ACK tokens
+    std::string generate_ack_token();
 };
 
 } // namespace mcp

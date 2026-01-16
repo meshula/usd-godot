@@ -15,6 +15,8 @@
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/sdf/layer.h>
 
+using namespace usd_godot;
+
 namespace godot {
 
 void UsdStageProxy::_bind_methods() {
@@ -40,6 +42,19 @@ void UsdStageProxy::_bind_methods() {
     ClassDB::bind_method(D_METHOD("define_prim", "path", "type_name"), &UsdStageProxy::define_prim);
     ClassDB::bind_method(D_METHOD("remove_prim", "path"), &UsdStageProxy::remove_prim);
 
+    // Prim Attributes and Transforms
+    ClassDB::bind_method(D_METHOD("set_prim_attribute", "prim_path", "attr_name", "value_type", "value"),
+                         &UsdStageProxy::set_prim_attribute);
+    ClassDB::bind_method(D_METHOD("get_prim_attribute", "prim_path", "attr_name"),
+                         &UsdStageProxy::get_prim_attribute);
+    ClassDB::bind_method(D_METHOD("set_prim_transform", "prim_path", "tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"),
+                         &UsdStageProxy::set_prim_transform);
+    ClassDB::bind_method(D_METHOD("list_prims"), &UsdStageProxy::list_prims);
+
+    // Shared State (MCP Interop)
+    ClassDB::bind_method(D_METHOD("get_stage_id"), &UsdStageProxy::get_stage_id);
+    ClassDB::bind_method(D_METHOD("get_generation"), &UsdStageProxy::get_generation);
+
     // Time / Animation
     ClassDB::bind_method(D_METHOD("set_time_code", "time"), &UsdStageProxy::set_time_code);
     ClassDB::bind_method(D_METHOD("get_time_code"), &UsdStageProxy::get_time_code);
@@ -62,7 +77,7 @@ void UsdStageProxy::_bind_methods() {
     ClassDB::bind_method(D_METHOD("remove_sublayer", "path"), &UsdStageProxy::remove_sublayer);
 }
 
-UsdStageProxy::UsdStageProxy() : _is_modified(false), _current_time_code(0.0) {
+UsdStageProxy::UsdStageProxy() : _stage_id(0), _current_time_code(0.0) {
 }
 
 UsdStageProxy::~UsdStageProxy() {
@@ -83,19 +98,16 @@ Error UsdStageProxy::open(const String &p_path) {
         abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
     }
 
-    try {
-        _stage = pxr::UsdStage::Open(abs_path.utf8().get_data());
-        if (!_stage) {
-            UtilityFunctions::printerr("UsdStageProxy: Failed to open stage at ", p_path);
-            return ERR_CANT_OPEN;
-        }
-        _file_path = p_path;
-        _is_modified = false;
-        return OK;
-    } catch (const std::exception &e) {
-        UtilityFunctions::printerr("UsdStageProxy: Exception opening stage: ", e.what());
+    // Use UsdStageManager to open the stage
+    _stage_id = UsdStageManager::get_singleton().open_stage(abs_path.utf8().get_data());
+
+    if (_stage_id == 0) {
+        UtilityFunctions::printerr("UsdStageProxy: Failed to open stage at ", p_path);
         return ERR_CANT_OPEN;
     }
+
+    _file_path = p_path;
+    return OK;
 }
 
 Error UsdStageProxy::create_new(const String &p_path) {
@@ -108,55 +120,55 @@ Error UsdStageProxy::create_new(const String &p_path) {
         abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
     }
 
-    try {
-        _stage = pxr::UsdStage::CreateNew(abs_path.utf8().get_data());
-        if (!_stage) {
-            UtilityFunctions::printerr("UsdStageProxy: Failed to create stage at ", p_path);
-            return ERR_CANT_CREATE;
-        }
-        _file_path = p_path;
-        _is_modified = true;
+    // Use UsdStageManager to create the stage
+    _stage_id = UsdStageManager::get_singleton().create_stage(abs_path.utf8().get_data());
 
-        // Set up default stage metadata
-        pxr::UsdGeomSetStageUpAxis(_stage, pxr::UsdGeomTokens->y);
-        pxr::UsdGeomSetStageMetersPerUnit(_stage, 1.0);
-
-        return OK;
-    } catch (const std::exception &e) {
-        UtilityFunctions::printerr("UsdStageProxy: Exception creating stage: ", e.what());
+    if (_stage_id == 0) {
+        UtilityFunctions::printerr("UsdStageProxy: Failed to create stage at ", p_path);
         return ERR_CANT_CREATE;
     }
+
+    _file_path = p_path;
+
+    // Set up default stage metadata
+    StageRecord* record = get_stage_record();
+    if (record && record->get_stage()) {
+        pxr::UsdGeomSetStageUpAxis(record->get_stage(), pxr::UsdGeomTokens->y);
+        pxr::UsdGeomSetStageMetersPerUnit(record->get_stage(), 1.0);
+    }
+
+    return OK;
 }
 
 Error UsdStageProxy::save(const String &p_path) {
-    if (!_stage) {
+    if (_stage_id == 0) {
         UtilityFunctions::printerr("UsdStageProxy: No stage open");
         return ERR_UNCONFIGURED;
     }
 
-    try {
-        if (p_path.is_empty()) {
-            // Save to original location
-            _stage->Save();
-        } else {
-            // Convert Godot path to filesystem path
-            String abs_path = p_path;
-            if (p_path.begins_with("res://") || p_path.begins_with("user://")) {
-                abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
-            }
-            _stage->GetRootLayer()->Export(abs_path.utf8().get_data());
-            _file_path = p_path;
-        }
-        _is_modified = false;
-        return OK;
-    } catch (const std::exception &e) {
-        UtilityFunctions::printerr("UsdStageProxy: Exception saving stage: ", e.what());
+    // Convert Godot path to filesystem path if needed
+    String abs_path = p_path;
+    if (!p_path.is_empty() && (p_path.begins_with("res://") || p_path.begins_with("user://"))) {
+        abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
+    }
+
+    // Use UsdStageManager to save
+    bool success = UsdStageManager::get_singleton().save_stage(_stage_id, abs_path.utf8().get_data());
+
+    if (!success) {
+        UtilityFunctions::printerr("UsdStageProxy: Failed to save stage");
         return ERR_CANT_CREATE;
     }
+
+    if (!p_path.is_empty()) {
+        _file_path = p_path;
+    }
+
+    return OK;
 }
 
 Error UsdStageProxy::export_to(const String &p_path, bool p_binary) {
-    if (!_stage) {
+    if (_stage_id == 0) {
         UtilityFunctions::printerr("UsdStageProxy: No stage open");
         return ERR_UNCONFIGURED;
     }
@@ -167,43 +179,43 @@ Error UsdStageProxy::export_to(const String &p_path, bool p_binary) {
         abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
     }
 
-    try {
-        _stage->Export(abs_path.utf8().get_data());
-        return OK;
-    } catch (const std::exception &e) {
-        UtilityFunctions::printerr("UsdStageProxy: Exception exporting stage: ", e.what());
+    // Use UsdStageManager to save
+    bool success = UsdStageManager::get_singleton().save_stage(_stage_id, abs_path.utf8().get_data());
+
+    if (!success) {
+        UtilityFunctions::printerr("UsdStageProxy: Failed to export stage");
         return ERR_CANT_CREATE;
     }
+
+    return OK;
 }
 
 void UsdStageProxy::close() {
-    _stage = nullptr;
-    _file_path = String();
-    _is_modified = false;
+    if (_stage_id != 0) {
+        UsdStageManager::get_singleton().close_stage(_stage_id);
+        _stage_id = 0;
+        _file_path = String();
+    }
 }
 
 Error UsdStageProxy::reload() {
-    if (!_stage) {
+    if (_stage_id == 0) {
         UtilityFunctions::printerr("UsdStageProxy: No stage open");
         return ERR_UNCONFIGURED;
     }
 
-    try {
-        _stage->Reload();
-        _is_modified = false;
-        return OK;
-    } catch (const std::exception &e) {
-        UtilityFunctions::printerr("UsdStageProxy: Exception reloading stage: ", e.what());
-        return ERR_CANT_OPEN;
-    }
+    // Close and reopen
+    String path = _file_path;
+    close();
+    return open(path);
 }
 
 bool UsdStageProxy::is_open() const {
-    return _stage != nullptr;
+    return _stage_id != 0;
 }
 
 bool UsdStageProxy::is_modified() const {
-    return _is_modified;
+    return get_generation() > 0;
 }
 
 // -----------------------------------------------------------------------------
@@ -211,67 +223,72 @@ bool UsdStageProxy::is_modified() const {
 // -----------------------------------------------------------------------------
 
 Ref<UsdPrimProxy> UsdStageProxy::get_default_prim() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return Ref<UsdPrimProxy>();
     }
 
-    pxr::UsdPrim default_prim = _stage->GetDefaultPrim();
+    pxr::UsdPrim default_prim = record->get_stage()->GetDefaultPrim();
     if (!default_prim.IsValid()) {
         return Ref<UsdPrimProxy>();
     }
 
-    return UsdPrimProxy::create(default_prim, _stage);
+    return UsdPrimProxy::create(default_prim, record->get_stage());
 }
 
 Error UsdStageProxy::set_default_prim(const String &p_prim_path) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return ERR_UNCONFIGURED;
     }
 
     pxr::SdfPath path(p_prim_path.utf8().get_data());
-    pxr::UsdPrim prim = _stage->GetPrimAtPath(path);
+    pxr::UsdPrim prim = record->get_stage()->GetPrimAtPath(path);
     if (!prim.IsValid()) {
         UtilityFunctions::printerr("UsdStageProxy: Prim not found at path: ", p_prim_path);
         return ERR_DOES_NOT_EXIST;
     }
 
-    _stage->SetDefaultPrim(prim);
-    _is_modified = true;
+    record->get_stage()->SetDefaultPrim(prim);
+    record->mark_modified();
     return OK;
 }
 
 Ref<UsdPrimProxy> UsdStageProxy::get_prim_at_path(const String &p_path) const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return Ref<UsdPrimProxy>();
     }
 
     pxr::SdfPath path(p_path.utf8().get_data());
-    pxr::UsdPrim prim = _stage->GetPrimAtPath(path);
+    pxr::UsdPrim prim = record->get_stage()->GetPrimAtPath(path);
     if (!prim.IsValid()) {
         return Ref<UsdPrimProxy>();
     }
 
-    return UsdPrimProxy::create(prim, _stage);
+    return UsdPrimProxy::create(prim, record->get_stage());
 }
 
 bool UsdStageProxy::has_prim_at_path(const String &p_path) const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return false;
     }
 
     pxr::SdfPath path(p_path.utf8().get_data());
-    pxr::UsdPrim prim = _stage->GetPrimAtPath(path);
+    pxr::UsdPrim prim = record->get_stage()->GetPrimAtPath(path);
     return prim.IsValid();
 }
 
 Array UsdStageProxy::traverse() const {
     Array result;
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return result;
     }
 
-    for (const pxr::UsdPrim &prim : _stage->Traverse()) {
-        result.push_back(UsdPrimProxy::create(prim, _stage));
+    for (const pxr::UsdPrim &prim : record->get_stage()->Traverse()) {
+        result.push_back(UsdPrimProxy::create(prim, record->get_stage()));
     }
 
     return result;
@@ -279,14 +296,15 @@ Array UsdStageProxy::traverse() const {
 
 Array UsdStageProxy::traverse_by_type(const String &p_type_name) const {
     Array result;
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return result;
     }
 
     pxr::TfToken type_token(p_type_name.utf8().get_data());
-    for (const pxr::UsdPrim &prim : _stage->Traverse()) {
+    for (const pxr::UsdPrim &prim : record->get_stage()->Traverse()) {
         if (prim.GetTypeName() == type_token) {
-            result.push_back(UsdPrimProxy::create(prim, _stage));
+            result.push_back(UsdPrimProxy::create(prim, record->get_stage()));
         }
     }
 
@@ -298,7 +316,8 @@ Array UsdStageProxy::traverse_by_type(const String &p_type_name) const {
 // -----------------------------------------------------------------------------
 
 Ref<UsdPrimProxy> UsdStageProxy::define_prim(const String &p_path, const String &p_type_name) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         UtilityFunctions::printerr("UsdStageProxy: No stage open");
         return Ref<UsdPrimProxy>();
     }
@@ -307,13 +326,13 @@ Ref<UsdPrimProxy> UsdStageProxy::define_prim(const String &p_path, const String 
     pxr::TfToken type_token(p_type_name.utf8().get_data());
 
     try {
-        pxr::UsdPrim prim = _stage->DefinePrim(path, type_token);
+        pxr::UsdPrim prim = record->get_stage()->DefinePrim(path, type_token);
         if (!prim.IsValid()) {
             UtilityFunctions::printerr("UsdStageProxy: Failed to define prim at ", p_path);
             return Ref<UsdPrimProxy>();
         }
-        _is_modified = true;
-        return UsdPrimProxy::create(prim, _stage);
+        record->mark_modified();
+        return UsdPrimProxy::create(prim, record->get_stage());
     } catch (const std::exception &e) {
         UtilityFunctions::printerr("UsdStageProxy: Exception defining prim: ", e.what());
         return Ref<UsdPrimProxy>();
@@ -321,15 +340,16 @@ Ref<UsdPrimProxy> UsdStageProxy::define_prim(const String &p_path, const String 
 }
 
 Error UsdStageProxy::remove_prim(const String &p_path) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return ERR_UNCONFIGURED;
     }
 
     pxr::SdfPath path(p_path.utf8().get_data());
 
     try {
-        if (_stage->RemovePrim(path)) {
-            _is_modified = true;
+        if (record->get_stage()->RemovePrim(path)) {
+            record->mark_modified();
             return OK;
         }
         return ERR_CANT_RESOLVE;
@@ -354,41 +374,46 @@ double UsdStageProxy::get_time_code() const {
 }
 
 double UsdStageProxy::get_start_time_code() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return 0.0;
     }
-    return _stage->GetStartTimeCode();
+    return record->get_stage()->GetStartTimeCode();
 }
 
 double UsdStageProxy::get_end_time_code() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return 0.0;
     }
-    return _stage->GetEndTimeCode();
+    return record->get_stage()->GetEndTimeCode();
 }
 
 void UsdStageProxy::set_time_range(double p_start, double p_end) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return;
     }
-    _stage->SetStartTimeCode(p_start);
-    _stage->SetEndTimeCode(p_end);
-    _is_modified = true;
+    record->get_stage()->SetStartTimeCode(p_start);
+    record->get_stage()->SetEndTimeCode(p_end);
+    record->mark_modified();
 }
 
 double UsdStageProxy::get_frames_per_second() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return 24.0;
     }
-    return _stage->GetFramesPerSecond();
+    return record->get_stage()->GetFramesPerSecond();
 }
 
 void UsdStageProxy::set_frames_per_second(double p_fps) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return;
     }
-    _stage->SetFramesPerSecond(p_fps);
-    _is_modified = true;
+    record->get_stage()->SetFramesPerSecond(p_fps);
+    record->mark_modified();
 }
 
 // -----------------------------------------------------------------------------
@@ -396,22 +421,25 @@ void UsdStageProxy::set_frames_per_second(double p_fps) {
 // -----------------------------------------------------------------------------
 
 String UsdStageProxy::get_root_layer_path() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return String();
     }
-    return String(_stage->GetRootLayer()->GetRealPath().c_str());
+    return String(record->get_stage()->GetRootLayer()->GetRealPath().c_str());
 }
 
 String UsdStageProxy::get_up_axis() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return "Y";
     }
-    pxr::TfToken axis = pxr::UsdGeomGetStageUpAxis(_stage);
+    pxr::TfToken axis = pxr::UsdGeomGetStageUpAxis(record->get_stage());
     return String(axis.GetText());
 }
 
 void UsdStageProxy::set_up_axis(const String &p_axis) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return;
     }
     pxr::TfToken axis_token;
@@ -423,23 +451,25 @@ void UsdStageProxy::set_up_axis(const String &p_axis) {
         UtilityFunctions::printerr("UsdStageProxy: Invalid up axis: ", p_axis, " (must be Y or Z)");
         return;
     }
-    pxr::UsdGeomSetStageUpAxis(_stage, axis_token);
-    _is_modified = true;
+    pxr::UsdGeomSetStageUpAxis(record->get_stage(), axis_token);
+    record->mark_modified();
 }
 
 double UsdStageProxy::get_meters_per_unit() const {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return 1.0;
     }
-    return pxr::UsdGeomGetStageMetersPerUnit(_stage);
+    return pxr::UsdGeomGetStageMetersPerUnit(record->get_stage());
 }
 
 void UsdStageProxy::set_meters_per_unit(double p_meters_per_unit) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return;
     }
-    pxr::UsdGeomSetStageMetersPerUnit(_stage, p_meters_per_unit);
-    _is_modified = true;
+    pxr::UsdGeomSetStageMetersPerUnit(record->get_stage(), p_meters_per_unit);
+    record->mark_modified();
 }
 
 // -----------------------------------------------------------------------------
@@ -448,11 +478,12 @@ void UsdStageProxy::set_meters_per_unit(double p_meters_per_unit) {
 
 PackedStringArray UsdStageProxy::get_sublayer_paths() const {
     PackedStringArray result;
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return result;
     }
 
-    auto root_layer = _stage->GetRootLayer();
+    auto root_layer = record->get_stage()->GetRootLayer();
     for (const std::string &path : root_layer->GetSubLayerPaths()) {
         result.push_back(String(path.c_str()));
     }
@@ -460,14 +491,15 @@ PackedStringArray UsdStageProxy::get_sublayer_paths() const {
 }
 
 Error UsdStageProxy::add_sublayer(const String &p_path) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return ERR_UNCONFIGURED;
     }
 
     try {
-        auto root_layer = _stage->GetRootLayer();
+        auto root_layer = record->get_stage()->GetRootLayer();
         root_layer->InsertSubLayerPath(p_path.utf8().get_data());
-        _is_modified = true;
+        record->mark_modified();
         return OK;
     } catch (const std::exception &e) {
         UtilityFunctions::printerr("UsdStageProxy: Exception adding sublayer: ", e.what());
@@ -476,12 +508,13 @@ Error UsdStageProxy::add_sublayer(const String &p_path) {
 }
 
 Error UsdStageProxy::remove_sublayer(const String &p_path) {
-    if (!_stage) {
+    StageRecord* record = get_stage_record();
+    if (!record || !record->get_stage()) {
         return ERR_UNCONFIGURED;
     }
 
     try {
-        auto root_layer = _stage->GetRootLayer();
+        auto root_layer = record->get_stage()->GetRootLayer();
         std::string path_str = p_path.utf8().get_data();
 
         // Find and remove the sublayer
@@ -489,7 +522,7 @@ Error UsdStageProxy::remove_sublayer(const String &p_path) {
         for (size_t i = 0; i < sublayers.size(); ++i) {
             if (sublayers[i] == path_str) {
                 root_layer->RemoveSubLayerPath(i);
-                _is_modified = true;
+                record->mark_modified();
                 return OK;
             }
         }
@@ -498,6 +531,99 @@ Error UsdStageProxy::remove_sublayer(const String &p_path) {
         UtilityFunctions::printerr("UsdStageProxy: Exception removing sublayer: ", e.what());
         return ERR_CANT_RESOLVE;
     }
+}
+
+// -----------------------------------------------------------------------------
+// Prim Attributes and Transforms (Shared with MCP)
+// -----------------------------------------------------------------------------
+
+Error UsdStageProxy::set_prim_attribute(const String &p_prim_path, const String &p_attr_name,
+                                        const String &p_value_type, const String &p_value) {
+    if (_stage_id == 0) {
+        UtilityFunctions::printerr("UsdStageProxy: No stage open");
+        return ERR_UNCONFIGURED;
+    }
+
+    bool success = UsdStageManager::get_singleton().set_prim_attribute(
+        _stage_id, p_prim_path.utf8().get_data(), p_attr_name.utf8().get_data(),
+        p_value_type.utf8().get_data(), p_value.utf8().get_data());
+
+    return success ? OK : ERR_CANT_CREATE;
+}
+
+Dictionary UsdStageProxy::get_prim_attribute(const String &p_prim_path, const String &p_attr_name) const {
+    Dictionary result;
+
+    if (_stage_id == 0) {
+        UtilityFunctions::printerr("UsdStageProxy: No stage open");
+        return result;
+    }
+
+    std::string value, value_type;
+    bool success = UsdStageManager::get_singleton().get_prim_attribute(
+        _stage_id, p_prim_path.utf8().get_data(), p_attr_name.utf8().get_data(),
+        value, value_type);
+
+    if (success) {
+        result["value"] = String(value.c_str());
+        result["type"] = String(value_type.c_str());
+    }
+
+    return result;
+}
+
+Error UsdStageProxy::set_prim_transform(const String &p_prim_path,
+                                        double p_tx, double p_ty, double p_tz,
+                                        double p_rx, double p_ry, double p_rz,
+                                        double p_sx, double p_sy, double p_sz) {
+    if (_stage_id == 0) {
+        UtilityFunctions::printerr("UsdStageProxy: No stage open");
+        return ERR_UNCONFIGURED;
+    }
+
+    bool success = UsdStageManager::get_singleton().set_prim_transform(
+        _stage_id, p_prim_path.utf8().get_data(),
+        p_tx, p_ty, p_tz, p_rx, p_ry, p_rz, p_sx, p_sy, p_sz);
+
+    return success ? OK : ERR_CANT_CREATE;
+}
+
+PackedStringArray UsdStageProxy::list_prims() const {
+    PackedStringArray result;
+
+    if (_stage_id == 0) {
+        return result;
+    }
+
+    std::vector<std::string> prims = UsdStageManager::get_singleton().list_prims(_stage_id);
+
+    for (const std::string& prim_path : prims) {
+        result.push_back(String(prim_path.c_str()));
+    }
+
+    return result;
+}
+
+// -----------------------------------------------------------------------------
+// Shared State (MCP Interop)
+// -----------------------------------------------------------------------------
+
+int64_t UsdStageProxy::get_stage_id() const {
+    return _stage_id;
+}
+
+int64_t UsdStageProxy::get_generation() const {
+    if (_stage_id == 0) {
+        return 0;
+    }
+    return UsdStageManager::get_singleton().get_generation(_stage_id);
+}
+
+StageRecord* UsdStageProxy::get_stage_record() const {
+    if (_stage_id == 0) {
+        return nullptr;
+    }
+    return UsdStageManager::get_singleton().get_stage_record(_stage_id);
 }
 
 // -----------------------------------------------------------------------------

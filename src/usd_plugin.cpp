@@ -5,6 +5,10 @@
 #include "usd_mesh_import_helper.h"
 #include "usd_state.h"
 #include "mcp_control_panel.h"
+#include "mcp_server.h"
+#include "mcp_globals.h"
+#include "usd_stage_group_mapping.h"
+#include "usd_stage_manager_panel.h"
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
@@ -30,6 +34,10 @@
 #include <pxr/base/vt/array.h>
 #include <pxr/base/gf/vec3f.h>
 
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 // For setenv
@@ -48,6 +56,10 @@ void USDPlugin::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_export_scene_as_usd", "file_path"), &USDPlugin::_export_scene_as_usd);
     ClassDB::bind_method(D_METHOD("_popup_usd_import_dialog"), &USDPlugin::_popup_usd_import_dialog);
     ClassDB::bind_method(D_METHOD("_import_usd_file", "file_path"), &USDPlugin::_import_usd_file);
+    ClassDB::bind_method(D_METHOD("_on_import_confirmed"), &USDPlugin::_on_import_confirmed);
+    ClassDB::bind_method(D_METHOD("_import_to_group", "file_path", "group_name", "force"), &USDPlugin::_import_to_group);
+    ClassDB::bind_method(D_METHOD("_query_scene_tree", "path"), &USDPlugin::_query_scene_tree);
+    ClassDB::bind_method(D_METHOD("_perform_scene_query_deferred", "query_id"), &USDPlugin::_perform_scene_query_deferred);
 }
 
 USDPlugin::USDPlugin() {
@@ -122,22 +134,61 @@ void USDPlugin::_enter_tree() {
     } else {
         UtilityFunctions::printerr("USD Plugin: Failed to get export menu");
     }
-    
-    // Add the "Import USD" button to the editor's toolbar
-    Button *import_button = memnew(Button);
-    import_button->set_text("Import USD");
-    import_button->set_tooltip_text("Import a USD file into the current scene");
-    import_button->connect("pressed", Callable(this, "_popup_usd_import_dialog"));
-    
-    // Add the button to the editor's toolbar
-    add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, import_button);
-    UtilityFunctions::print("USD Plugin: Added Import USD button to toolbar");
 
     // Create and add MCP Control Panel
     _mcp_control_panel = memnew(McpControlPanel);
     add_control_to_bottom_panel(_mcp_control_panel, "MCP Control");
     UtilityFunctions::print("USD Plugin: Added MCP Control Panel to bottom panel");
-    
+
+    // Create and add USD Stage Manager Panel
+    _stage_manager_panel = memnew(UsdStageManagerPanel);
+    _stage_manager_panel->set_plugin(this);  // Set plugin reference for imports
+    add_control_to_bottom_panel(_stage_manager_panel, "USD Stages");
+    UtilityFunctions::print("USD Plugin: Added USD Stage Manager Panel to bottom panel");
+
+    // Set up MCP import callback (for usd/reflect_to_scene and usd/confirm_reflect commands)
+    mcp::McpServer* mcp_server = usd_godot::get_mcp_server_instance();
+    if (mcp_server) {
+        mcp_server->set_import_callback([this](const std::string& file_path, const std::string& group_name, bool force) -> int {
+            // This callback runs on MCP thread, so use call_deferred to run on main thread
+            String godot_file_path(file_path.c_str());
+            String godot_group_name(group_name.c_str());
+
+            // Use call_deferred to run on main thread
+            call_deferred("_import_to_group", godot_file_path, godot_group_name, force);
+
+            // Return 0 to indicate success (actual node count can't be returned from async operation)
+            return 0;
+        });
+
+        mcp_server->set_query_scene_callback([this](const std::string& path) -> std::string {
+            // This callback runs in MCP's detached thread
+            // Create a query request and store it
+            auto request = std::make_shared<SceneQueryRequest>();
+            request->path = String(path.c_str());
+
+            int query_id;
+            {
+                std::lock_guard<std::mutex> lock(pending_queries_mutex_);
+                query_id = next_query_id_++;
+                pending_queries_[query_id] = request;
+            }
+
+            // Schedule work on main thread
+            call_deferred("_perform_scene_query_deferred", query_id);
+
+            // Wait for main thread to complete (with timeout)
+            std::unique_lock<std::mutex> lock(request->mutex);
+            if (request->cv.wait_for(lock, std::chrono::seconds(5), [&request]{ return request->done; })) {
+                return request->result;
+            } else {
+                return "{\"error\":\"Query timeout\"}";
+            }
+        });
+
+        UtilityFunctions::print("USD Plugin: Set up MCP callbacks");
+    }
+
     if (!_file_dialog) {
         // Set up the export file dialog
         _file_dialog = memnew(EditorFileDialog);
@@ -169,9 +220,17 @@ void USDPlugin::_enter_tree() {
         _import_file_dialog->add_filter("*.usdc");
     }
 
+    if (!_import_confirm_dialog) {
+        // Set up the confirmation dialog for group overwrites
+        _import_confirm_dialog = memnew(AcceptDialog);
+        _import_confirm_dialog->set_title("Confirm Overwrite");
+        _import_confirm_dialog->connect("confirmed", Callable(this, "_on_import_confirmed"));
+    }
+
     // Add the file dialogs to the editor
     EditorInterface::get_singleton()->get_base_control()->add_child(_file_dialog);
     EditorInterface::get_singleton()->get_base_control()->add_child(_import_file_dialog);
+    EditorInterface::get_singleton()->get_base_control()->add_child(_import_confirm_dialog);
 }
 
 void USDPlugin::_exit_tree() {
@@ -197,6 +256,12 @@ void USDPlugin::_exit_tree() {
     }
     
     // The import button is automatically removed when the plugin is removed
+
+    // Clear MCP import callback
+    mcp::McpServer* mcp_server = usd_godot::get_mcp_server_instance();
+    if (mcp_server) {
+        mcp_server->set_import_callback(nullptr);
+    }
 
     // Remove MCP Control Panel
     if (_mcp_control_panel) {
@@ -631,6 +696,260 @@ bool USDPlugin::_has_main_screen() const {
 String USDPlugin::_get_plugin_name() const {
     // Return the name of the plugin
     return "USD";
+}
+
+// Count nodes in a scene group
+int USDPlugin::_count_nodes_in_group(const String &p_group_name) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) return 0;
+
+    Node *edited_scene = editor->get_edited_scene_root();
+    if (!edited_scene) return 0;
+
+    SceneTree *tree = edited_scene->get_tree();
+    if (!tree) return 0;
+
+    TypedArray<Node> nodes = tree->get_nodes_in_group(p_group_name);
+    return nodes.size();
+}
+
+// Remove all nodes in a scene group
+void USDPlugin::_remove_nodes_in_group(const String &p_group_name) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) return;
+
+    Node *edited_scene = editor->get_edited_scene_root();
+    if (!edited_scene) return;
+
+    SceneTree *tree = edited_scene->get_tree();
+    if (!tree) return;
+
+    TypedArray<Node> nodes = tree->get_nodes_in_group(p_group_name);
+    UtilityFunctions::print("USD Import: Removing ", nodes.size(), " nodes from group '", p_group_name, "'");
+
+    // Remove nodes in reverse order to avoid issues with parent-child relationships
+    for (int i = nodes.size() - 1; i >= 0; i--) {
+        Node *node = Object::cast_to<Node>(nodes[i]);
+        if (node && node != edited_scene) {  // Don't remove the scene root
+            node->queue_free();
+        }
+    }
+}
+
+// Confirmation callback for group overwrite
+void USDPlugin::_on_import_confirmed() {
+    if (_pending_import_file_path.is_empty() || _pending_import_group_name.is_empty()) {
+        UtilityFunctions::printerr("USD Import: No pending import to confirm");
+        return;
+    }
+
+    UtilityFunctions::print("USD Import: Confirmed overwrite for group '", _pending_import_group_name, "'");
+
+    // Proceed with import (force=true skips confirmation check)
+    _import_to_group(_pending_import_file_path, _pending_import_group_name, true);
+
+    // Clear pending state
+    _pending_import_file_path = "";
+    _pending_import_group_name = "";
+}
+
+// Import USD file to a scene group
+void USDPlugin::_import_to_group(const String &p_file_path, const String &p_group_name, bool p_force) {
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        UtilityFunctions::printerr("USD Import: Failed to get EditorInterface singleton");
+        return;
+    }
+
+    Node *edited_scene = editor->get_edited_scene_root();
+    if (!edited_scene) {
+        UtilityFunctions::printerr("USD Import: No scene is currently being edited");
+        return;
+    }
+
+    // Check if group already has nodes
+    if (!p_force) {
+        int node_count = _count_nodes_in_group(p_group_name);
+        if (node_count > 0) {
+            // Show confirmation dialog
+            _pending_import_file_path = p_file_path;
+            _pending_import_group_name = p_group_name;
+
+            String message = "Group '" + p_group_name + "' already exists with " + String::num_int64(node_count) + " nodes. Overwrite?";
+            _import_confirm_dialog->set_text(message);
+            _import_confirm_dialog->popup_centered();
+
+            UtilityFunctions::print("USD Import: Awaiting confirmation for group '", p_group_name, "' with ", node_count, " nodes");
+            return;
+        }
+    }
+
+    // If force=true or group is empty, proceed with import
+    if (p_force) {
+        // Remove existing nodes in group
+        _remove_nodes_in_group(p_group_name);
+    }
+
+    UtilityFunctions::print("USD Import: Importing USD file to group '", p_group_name, "' from ", p_file_path);
+
+    try {
+        // Open the USD stage
+        UsdStageRefPtr stage = UsdStage::Open(p_file_path.utf8().get_data());
+        if (!stage) {
+            UtilityFunctions::printerr("USD Import: Failed to open USD stage from ", p_file_path);
+            return;
+        }
+
+        // Get the default prim
+        UsdPrim defaultPrim = stage->GetDefaultPrim();
+        if (!defaultPrim) {
+            defaultPrim = stage->GetPseudoRoot();
+        }
+
+        // Create a parent node for the imported hierarchy
+        Node3D *group_parent = memnew(Node3D);
+        group_parent->set_name(p_group_name);
+
+        // Add the parent to the scene FIRST (before converting prims)
+        // This ensures the parent is in the tree before we set_owner on children
+        edited_scene->add_child(group_parent);
+        group_parent->set_owner(edited_scene);
+
+        // Now convert USD prims to Godot nodes
+        _convert_prim_to_node(defaultPrim, group_parent, edited_scene);
+
+        // Add all imported nodes (including parent) to the group
+        TypedArray<Node> all_children;
+        all_children.push_back(group_parent);
+
+        // Recursively collect all children
+        std::function<void(Node*)> collect_children;
+        collect_children = [&](Node *node) {
+            for (int i = 0; i < node->get_child_count(); i++) {
+                Node *child = node->get_child(i);
+                all_children.push_back(child);
+                collect_children(child);
+            }
+        };
+        collect_children(group_parent);
+
+        // Add all nodes to the group
+        for (int i = 0; i < all_children.size(); i++) {
+            Node *node = Object::cast_to<Node>(all_children[i]);
+            if (node) {
+                node->add_to_group(p_group_name);
+            }
+        }
+
+        // Update mapping with current generation (0 for now, will be tracked by MCP)
+        UsdStageGroupMapping::get_singleton()->set_mapping(p_file_path, p_group_name);
+        UsdStageGroupMapping::get_singleton()->update_generation(p_file_path, 0);
+
+        UtilityFunctions::print("USD Import: Successfully imported to group '", p_group_name, "' with ", all_children.size(), " nodes");
+
+    } catch (const std::exception& e) {
+        UtilityFunctions::printerr("USD Import: Exception occurred: ", e.what());
+    }
+}
+
+String USDPlugin::_query_scene_tree(const String &p_path) {
+    // This method runs on the main thread (called via call_deferred from MCP)
+    EditorInterface *editor = EditorInterface::get_singleton();
+    if (!editor) {
+        return "{}"; // Return empty JSON
+    }
+
+    Node *scene_root = editor->get_edited_scene_root();
+    if (!scene_root) {
+        return "{}"; // Return empty JSON
+    }
+
+    Node *target_node = nullptr;
+
+    if (p_path == "/") {
+        target_node = scene_root;
+    } else {
+        target_node = scene_root->get_node_or_null(p_path);
+        if (!target_node) {
+            return "{}"; // Node not found
+        }
+    }
+
+    // Build JSON manually
+    String result = "{\"path\":\"" + p_path + "\",\"node_count\":" + String::num_int64(target_node->get_child_count()) + ",\"nodes\":[";
+
+    for (int i = 0; i < target_node->get_child_count(); i++) {
+        Node *child = target_node->get_child(i);
+        if (!child) continue;
+
+        if (i > 0) result += ",";
+
+        String child_name = child->get_name();
+        String child_class = child->get_class();
+        String child_path = p_path == String("/") ? String("/") + child_name : p_path + String("/") + child_name;
+
+        result += "{";
+        result += "\"name\":\"" + child_name + "\",";
+        result += "\"type\":\"" + child_class + "\",";
+        result += "\"path\":\"" + child_path + "\",";
+        result += "\"child_count\":" + String::num_int64(child->get_child_count()) + ",";
+
+        // Groups
+        TypedArray<StringName> groups = child->get_groups();
+        result += "\"groups\":[";
+        for (int j = 0; j < groups.size(); j++) {
+            if (j > 0) result += ",";
+            result += "\"" + String(groups[j]) + "\"";
+        }
+        result += "]";
+
+        // Transform (if Node3D)
+        Node3D *node3d = Object::cast_to<Node3D>(child);
+        if (node3d) {
+            Transform3D transform = node3d->get_transform();
+            Vector3 pos = transform.origin;
+
+            result += ",\"transform\":{";
+            result += "\"position\":[" + String::num(pos.x) + "," + String::num(pos.y) + "," + String::num(pos.z) + "]";
+            result += "}";
+        }
+
+        result += "}";
+    }
+
+    result += "]}";
+    return result;
+}
+
+// Helper method that runs on main thread and updates the result
+void USDPlugin::_perform_scene_query_deferred(int query_id) {
+    // This runs on the main thread via call_deferred
+    std::shared_ptr<SceneQueryRequest> request;
+
+    // Retrieve the request
+    {
+        std::lock_guard<std::mutex> lock(pending_queries_mutex_);
+        auto it = pending_queries_.find(query_id);
+        if (it != pending_queries_.end()) {
+            request = it->second;
+            pending_queries_.erase(it);
+        }
+    }
+
+    if (!request) {
+        return;  // Request not found
+    }
+
+    // Perform the query (safe on main thread)
+    String result = _query_scene_tree(request->path);
+
+    // Update the result and signal completion
+    {
+        std::lock_guard<std::mutex> lock(request->mutex);
+        request->result = std::string(result.utf8().get_data());
+        request->done = true;
+    }
+    request->cv.notify_one();
 }
 
 }

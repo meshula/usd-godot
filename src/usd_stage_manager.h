@@ -14,16 +14,32 @@ namespace usd_godot {
 // Unique identifier for stages
 using StageId = uint64_t;
 
-// Stage record with generation tracking
+// Stage record with generation tracking and lazy loading
 // Generation is incremented on any mutation to help track if stage needs saving
 class StageRecord {
 public:
-    StageRecord(UsdStageRefPtr stage)
-        : stage_(stage), generation_(0) {}
+    // Constructor for loaded stage
+    StageRecord(UsdStageRefPtr stage, const std::string& file_path = "")
+        : stage_(stage), file_path_(file_path), generation_(0), is_loaded_(true) {}
 
-    // Read-only access
+    // Constructor for unloaded stage (lazy loading)
+    StageRecord(const std::string& file_path, uint64_t generation = 0)
+        : stage_(nullptr), file_path_(file_path), generation_(generation), is_loaded_(false) {}
+
+    // Read-only access - returns stage (may be null if not loaded)
     UsdStageRefPtr get_stage() const { return stage_; }
     uint64_t get_generation() const { return generation_; }
+    std::string get_file_path() const { return file_path_; }
+    bool is_loaded() const { return is_loaded_; }
+
+    // Lazy load stage on demand
+    UsdStageRefPtr ensure_stage();
+
+    // Unload stage to free memory
+    void unload();
+
+    // Set generation (for loading from registry)
+    void set_generation(uint64_t gen) { generation_ = gen; }
 
     // Mutating operations - these increment generation
     void mark_modified() { generation_++; }
@@ -57,7 +73,9 @@ public:
 
 private:
     UsdStageRefPtr stage_;
+    std::string file_path_;
     uint64_t generation_;
+    bool is_loaded_;
 };
 
 // Central stage manager - shared between MCP server and GDScript bindings
@@ -108,6 +126,13 @@ public:
 
     // Get all active stage IDs
     std::vector<StageId> get_active_stages() const;
+
+    // Registry persistence (lazy loading support)
+    bool save_stage_registry();
+    bool load_stage_registry();
+
+    // Register a stage without loading it (for lazy loading)
+    StageId register_stage(const std::string& file_path, uint64_t generation = 0);
 
 private:
     UsdStageManager() : next_id_(1) {}
