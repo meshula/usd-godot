@@ -1,6 +1,9 @@
 #include "usd_saver.h"
 #include "usd_mesh_export_helper.h"
-#include "usd_materials.h"   // transplanted: write_preview_material
+#include "usd_materials.h"     // transplanted: write_preview_material
+#include "usd_stage_utils.h"   // transplanted: get_usd_metadata
+
+#include <fstream>
 
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/node.hpp>
@@ -11,10 +14,14 @@
 #include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/classes/capsule_mesh.hpp>
 #include <godot_cpp/classes/cylinder_mesh.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
+#include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
 
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/xform.h>
@@ -23,6 +30,10 @@
 #include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/capsule.h>
 #include <pxr/usd/usdGeom/cylinder.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/subset.h>
+#include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/xformCommonAPI.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/base/gf/matrix4d.h>
@@ -104,6 +115,181 @@ pxr::UsdPrim export_mesh_prim(const Ref<Mesh> &p_mesh, pxr::UsdStageRefPtr p_sta
     return helper.export_mesh_to_prim(p_mesh, p_stage, p_path);
 }
 
+// ---- source-preserving save (4c): copy the original layer, patch only changed edits -------------
+
+bool copy_file_bytes(const String &p_src_abs, const String &p_dst_abs) {
+    std::ifstream in(p_src_abs.utf8().get_data(), std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::ofstream out(p_dst_abs.utf8().get_data(), std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out << in.rdbuf();
+    return true;
+}
+
+Transform3D gf_to_transform(const pxr::GfMatrix4d &m) {
+    Basis b;
+    b.set_column(0, Vector3(m[0][0], m[0][1], m[0][2]));
+    b.set_column(1, Vector3(m[1][0], m[1][1], m[1][2]));
+    b.set_column(2, Vector3(m[2][0], m[2][1], m[2][2]));
+    return Transform3D(b, Vector3(m[3][0], m[3][1], m[3][2]));
+}
+
+// Author a node's transform onto a prim as separate translate/rotate/scale ops (what the corpus
+// asserts), replacing any prior common-API ops.
+void author_transform(const pxr::UsdPrim &p_prim, const Transform3D &p_t) {
+    pxr::UsdGeomXformCommonAPI api(p_prim);
+    const Vector3 o = p_t.origin;
+    const Vector3 s = p_t.basis.get_scale();
+    const Vector3 e = p_t.basis.get_euler();
+    api.SetTranslate(pxr::GfVec3d(o.x, o.y, o.z));
+    api.SetRotate(pxr::GfVec3f((float)(e.x * 180.0 / M_PI), (float)(e.y * 180.0 / M_PI), (float)(e.z * 180.0 / M_PI)));
+    api.SetScale(pxr::GfVec3f(s.x, s.y, s.z));
+}
+
+// Walk the loaded scene; for each node mapped to a prim whose local transform changed, author the
+// new transform onto that prim in the (copied) source stage. Leaves everything else untouched.
+void author_changed_transforms(Node *p_node, pxr::UsdStageRefPtr p_stage) {
+    Node3D *n3d = Object::cast_to<Node3D>(p_node);
+    if (n3d != nullptr) {
+        const Dictionary meta = godot_usd::get_usd_metadata(p_node);
+        const String prim_path = meta.get("usd:prim_path", String());
+        if (!prim_path.is_empty()) {
+            pxr::UsdPrim prim = p_stage->GetPrimAtPath(pxr::SdfPath(prim_path.utf8().get_data()));
+            if (prim && prim.IsA<pxr::UsdGeomXformable>()) {
+                pxr::GfMatrix4d m;
+                bool resets = false;
+                pxr::UsdGeomXformable(prim).GetLocalTransformation(&m, &resets);
+                if (!gf_to_transform(m).is_equal_approx(n3d->get_transform())) {
+                    author_transform(prim, n3d->get_transform());
+                }
+            }
+        }
+    }
+    for (int i = 0; i < p_node->get_child_count(); i++) {
+        author_changed_transforms(p_node->get_child(i), p_stage);
+    }
+}
+
+// Save a scene that was loaded from USD (has usd:source_path) by copying that source layer and
+// authoring only the supported edits into the copy — preserving all authored structure. This first
+// increment handles local transform edits.
+Error save_source_preserving(Node *p_root, const String &p_source_path, const String &p_dest_path) {
+    String src_abs = p_source_path;
+    if (p_source_path.begins_with("res://") || p_source_path.begins_with("user://")) {
+        src_abs = ProjectSettings::get_singleton()->globalize_path(p_source_path);
+    }
+    String dst_abs = p_dest_path;
+    if (p_dest_path.begins_with("res://") || p_dest_path.begins_with("user://")) {
+        dst_abs = ProjectSettings::get_singleton()->globalize_path(p_dest_path);
+    }
+    if (!copy_file_bytes(src_abs, dst_abs)) {
+        UtilityFunctions::printerr("USD source-aware save: could not copy source ", p_source_path, " -> ", p_dest_path);
+        return ERR_CANT_CREATE;
+    }
+    pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(dst_abs.utf8().get_data());
+    if (!stage) {
+        return ERR_CANT_OPEN;
+    }
+    author_changed_transforms(p_root, stage);
+    stage->GetRootLayer()->Save();
+    return OK;
+}
+
+// Effective material for surface p_surface: instance override -> per-surface override -> mesh material.
+Ref<Material> resolve_surface_material(MeshInstance3D *p_mi, int p_surface) {
+    Ref<Material> m = p_mi->get_material_override();
+    if (m.is_null()) {
+        m = p_mi->get_surface_override_material(p_surface);
+    }
+    if (m.is_null() && p_mi->get_mesh().is_valid()) {
+        m = p_mi->get_mesh()->surface_get_material(p_surface);
+    }
+    return m;
+}
+
+// Export a multi-surface Godot ArrayMesh as a single UsdGeomMesh partitioned into GeomSubsets
+// (family "materialBind"), one per surface, each with its material bound — the round-trip
+// counterpart to the importer's subset -> multi-surface handling. Returns the mesh prim.
+pxr::UsdPrim export_multisurface_mesh(MeshInstance3D *p_mi, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &p_path, const String &p_save_path) {
+    Ref<ArrayMesh> mesh = p_mi->get_mesh();
+    pxr::UsdGeomMesh usd_mesh = pxr::UsdGeomMesh::Define(p_stage, p_path);
+
+    pxr::VtArray<pxr::GfVec3f> points;
+    pxr::VtArray<pxr::GfVec3f> normals;
+    pxr::VtArray<pxr::GfVec2f> uvs;
+    pxr::VtArray<int> face_counts;
+    pxr::VtArray<int> face_indices;
+    std::vector<pxr::VtArray<int>> subset_faces(mesh->get_surface_count());
+    bool any_normals = false;
+    bool any_uvs = false;
+
+    int point_offset = 0;
+    int face_cursor = 0;
+    for (int s = 0; s < mesh->get_surface_count(); s++) {
+        const Array arrays = mesh->surface_get_arrays(s);
+        const PackedVector3Array verts = arrays[Mesh::ARRAY_VERTEX];
+        const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+        const PackedVector3Array snorm = arrays[Mesh::ARRAY_NORMAL];
+        const PackedVector2Array suv = arrays[Mesh::ARRAY_TEX_UV];
+
+        for (int i = 0; i < verts.size(); i++) {
+            points.push_back(pxr::GfVec3f(verts[i].x, verts[i].y, verts[i].z));
+        }
+        for (int i = 0; i < snorm.size(); i++) {
+            normals.push_back(pxr::GfVec3f(snorm[i].x, snorm[i].y, snorm[i].z));
+            any_normals = true;
+        }
+        for (int i = 0; i < suv.size(); i++) {
+            uvs.push_back(pxr::GfVec2f(suv[i].x, suv[i].y)); // importer applies the V-flip
+            any_uvs = true;
+        }
+        // Triangles, winding reversed to match the importer's rightHanded (CCW) reversal.
+        for (int i = 0; i + 2 < indices.size(); i += 3) {
+            face_counts.push_back(3);
+            face_indices.push_back(indices[i] + point_offset);
+            face_indices.push_back(indices[i + 2] + point_offset);
+            face_indices.push_back(indices[i + 1] + point_offset);
+            subset_faces[s].push_back(face_cursor);
+            face_cursor++;
+        }
+        point_offset += verts.size();
+    }
+
+    usd_mesh.GetPointsAttr().Set(points);
+    usd_mesh.GetFaceVertexCountsAttr().Set(face_counts);
+    usd_mesh.GetFaceVertexIndicesAttr().Set(face_indices);
+    if (any_normals) {
+        usd_mesh.GetNormalsAttr().Set(normals);
+        usd_mesh.SetNormalsInterpolation(pxr::UsdGeomTokens->vertex);
+    }
+    if (any_uvs) {
+        pxr::UsdGeomPrimvarsAPI(usd_mesh.GetPrim())
+            .CreatePrimvar(pxr::TfToken("st"), pxr::SdfValueTypeNames->TexCoord2fArray, pxr::UsdGeomTokens->vertex)
+            .Set(uvs);
+    }
+
+    // One GeomSubset (family "materialBind") per surface, with its material bound.
+    for (int s = 0; s < mesh->get_surface_count(); s++) {
+        const std::string subset_name = "surface_" + std::to_string(s);
+        pxr::UsdGeomSubset subset = pxr::UsdGeomSubset::CreateGeomSubset(
+            usd_mesh, pxr::TfToken(subset_name), pxr::UsdGeomTokens->face,
+            subset_faces[s], pxr::TfToken("materialBind"), pxr::UsdGeomTokens->partition);
+
+        Ref<Material> material = resolve_surface_material(p_mi, s);
+        if (material.is_valid()) {
+            pxr::UsdShadeMaterial usd_material;
+            if (godot_usd::write_preview_material(p_stage, material, subset.GetPrim().GetPath(), p_save_path, ("Material_" + itos(s)), &usd_material) && usd_material) {
+                pxr::UsdShadeMaterialBindingAPI::Apply(subset.GetPrim()).Bind(usd_material);
+            }
+        }
+    }
+    return usd_mesh.GetPrim();
+}
+
 // Recursively author p_node (and children) into p_stage at p_prim_path. p_save_path is the target
 // USD path (used by the material writer to resolve/relativize texture assets).
 void export_node(Node *p_node, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &p_prim_path, const String &p_save_path) {
@@ -115,17 +301,21 @@ void export_node(Node *p_node, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &
 
     MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node);
     if (mesh_instance != nullptr && mesh_instance->get_mesh().is_valid()) {
-        prim = export_mesh_prim(mesh_instance->get_mesh(), p_stage, p_prim_path, &extra_scale);
+        Ref<ArrayMesh> array_mesh = mesh_instance->get_mesh();
+        if (array_mesh.is_valid() && array_mesh->get_surface_count() > 1) {
+            // Multi-surface -> single UsdGeomMesh + per-surface GeomSubsets (materials bound inside).
+            prim = export_multisurface_mesh(mesh_instance, p_stage, p_prim_path, p_save_path);
+        } else {
+            prim = export_mesh_prim(mesh_instance->get_mesh(), p_stage, p_prim_path, &extra_scale);
 
-        // Bind surface 0's material as a UsdPreviewSurface network (transplanted writer).
-        Ref<Material> material = mesh_instance->get_surface_override_material(0);
-        if (material.is_null()) {
-            material = mesh_instance->get_mesh()->surface_get_material(0);
-        }
-        if (prim && material.is_valid()) {
-            pxr::UsdShadeMaterial usd_material;
-            if (godot_usd::write_preview_material(p_stage, material, p_prim_path, p_save_path, "Material", &usd_material) && usd_material) {
-                pxr::UsdShadeMaterialBindingAPI::Apply(prim).Bind(usd_material);
+            // Bind the (single) material as a UsdPreviewSurface network. Resolution order matches
+            // Godot's effective material: instance override -> per-surface override -> mesh material.
+            Ref<Material> material = resolve_surface_material(mesh_instance, 0);
+            if (prim && material.is_valid()) {
+                pxr::UsdShadeMaterial usd_material;
+                if (godot_usd::write_preview_material(p_stage, material, p_prim_path, p_save_path, "Material", &usd_material) && usd_material) {
+                    pxr::UsdShadeMaterialBindingAPI::Apply(prim).Bind(usd_material);
+                }
             }
         }
     }
@@ -183,6 +373,16 @@ Error UsdResourceFormatSaver::_save(const Ref<Resource> &p_resource, const Strin
     if (root == nullptr) {
         UtilityFunctions::printerr("USD save: could not instantiate PackedScene for ", p_path);
         return ERR_CANT_CREATE;
+    }
+
+    // If this scene was loaded from USD (loader stamped usd:source_path), take the source-preserving
+    // path: copy the original layer and author only supported edits. Otherwise export an authored
+    // scene to a fresh layer.
+    const String source_path = godot_usd::get_usd_metadata(root).get("usd:source_path", String());
+    if (!source_path.is_empty()) {
+        const Error sp_result = save_source_preserving(root, source_path, p_path);
+        root->queue_free();
+        return sp_result;
     }
 
     String abs_path = p_path;

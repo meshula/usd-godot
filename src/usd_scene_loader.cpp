@@ -1,5 +1,6 @@
 #include "usd_scene_loader.h"
 #include "usd_scene_builder.h"
+#include "usd_stage_utils.h"   // set_usd_metadata
 
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/node.hpp>
@@ -57,6 +58,10 @@ Variant UsdResourceFormatLoader::_load(const String &p_path, const String &p_ori
         UtilityFunctions::printerr("USD load: builder produced no root for ", p_path);
         return Variant();
     }
+
+    // Stamp the originating USD path on the scene root: forensic provenance, and the anchor the
+    // source-preserving saver uses to reopen the original layer and author only changed edits.
+    godot_usd::set_usd_metadata(root, "usd:source_path", p_original_path.is_empty() ? p_path : p_original_path);
 
     Ref<PackedScene> packed;
     packed.instantiate();

@@ -42,6 +42,18 @@ const MUST_PASS := {
 	# Phase 4 (saver) — authored-scene export path:
 	"test_simple_scene_save.gd": true,             # authored Node3D+primitive tree -> USDA round-trip
 	"test_array_mesh_save.gd": true,               # generic ArrayMesh + material -> USDA round-trip
+	"test_standard_material_save.gd": true,        # full UsdPreviewSurface (specular/clearcoat/opacity) round-trip
+	"test_generated_texture_save.gd": true,        # UsdUVTexture (generated texture) export + reload
+	"test_subset_material_save.gd": true,          # multi-surface -> GeomSubset export + per-subset materials
+	# Phase 4c (source-preserving save): byte-copy source + author only changed transforms.
+	"test_source_aware_static_transform_save.gd": true, # transform edit merged into copied source layer
+	"test_named_material_subsets_roundtrip.gd": true,   # authored subset names/families preserved
+	"test_generic_face_subset_roundtrip.gd": true,
+	"test_edge_subset_roundtrip.gd": true,
+	"test_point_subset_roundtrip.gd": true,
+	"test_inherited_material_subset_roundtrip.gd": true,
+	"test_sparse_material_subset_roundtrip.gd": true,
+	"test_skeleton_roundtrip_save.gd": true,            # skeleton/skin structure preserved through round-trip
 	# NOT promoted (hollow, print-only — pass as soon as load() works, assert nothing):
 	#   test_preview_lighting.gd, test_skeleton_basic.gd  -> promote when lights/skel are real.
 }

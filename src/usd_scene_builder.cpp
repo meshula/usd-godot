@@ -3,6 +3,7 @@
 #include "usd_curves.h"         // transplanted: build_basis_curves_node
 #include "usd_lights.h"         // ported: build_light_node
 #include "usd_skel.h"           // transplanted: build_skeleton_node / append_skin_bindings / append_baked_skeleton_animations
+#include "usd_materials.h"      // transplanted: build_material_from_usd_material
 #include "usd_stage_utils.h"    // transplanted: set_usd_metadata (merges into a node's "usd" dict)
 
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -29,6 +30,7 @@
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usd/timeCode.h>
 #include <pxr/base/gf/matrix4d.h>
 
@@ -153,6 +155,18 @@ Node *UsdSceneBuilder::build_node(const pxr::UsdPrim &p_prim, Node *p_parent, No
         node = Object::cast_to<Node3D>(prim_node);
         if (!node) {
             node = memnew(Node3D);
+        }
+        // build_primitive_mesh_instance builds only geometry; apply any bound material here (the
+        // polygon-mesh path bakes materials into surfaces, but primitives need it applied directly).
+        MeshInstance3D *prim_mesh = Object::cast_to<MeshInstance3D>(node);
+        if (prim_mesh != nullptr) {
+            pxr::UsdShadeMaterial bound = pxr::UsdShadeMaterialBindingAPI(p_prim).ComputeBoundMaterial();
+            if (bound) {
+                Ref<Material> mat = godot_usd::build_material_from_usd_material(p_prim.GetStage(), pxr::UsdTimeCode::Default(), bound);
+                if (mat.is_valid()) {
+                    prim_mesh->set_surface_override_material(0, mat);
+                }
+            }
         }
     } else {
         // Xform / Scope / typeless organizational prims -> Node3D.
