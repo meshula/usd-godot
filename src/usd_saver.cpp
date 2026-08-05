@@ -2,8 +2,7 @@
 #include "usd_mesh_export_helper.h"
 #include "usd_materials.h"     // transplanted: write_preview_material
 #include "usd_stage_utils.h"   // transplanted: get_usd_metadata
-
-#include <fstream>
+#include "usd_source_merge.h"  // transplanted: save_static_imported_data_to_source_copy
 
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/node.hpp>
@@ -115,68 +114,10 @@ pxr::UsdPrim export_mesh_prim(const Ref<Mesh> &p_mesh, pxr::UsdStageRefPtr p_sta
     return helper.export_mesh_to_prim(p_mesh, p_stage, p_path);
 }
 
-// ---- source-preserving save (4c): copy the original layer, patch only changed edits -------------
-
-bool copy_file_bytes(const String &p_src_abs, const String &p_dst_abs) {
-    std::ifstream in(p_src_abs.utf8().get_data(), std::ios::binary);
-    if (!in) {
-        return false;
-    }
-    std::ofstream out(p_dst_abs.utf8().get_data(), std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return false;
-    }
-    out << in.rdbuf();
-    return true;
-}
-
-Transform3D gf_to_transform(const pxr::GfMatrix4d &m) {
-    Basis b;
-    b.set_column(0, Vector3(m[0][0], m[0][1], m[0][2]));
-    b.set_column(1, Vector3(m[1][0], m[1][1], m[1][2]));
-    b.set_column(2, Vector3(m[2][0], m[2][1], m[2][2]));
-    return Transform3D(b, Vector3(m[3][0], m[3][1], m[3][2]));
-}
-
-// Author a node's transform onto a prim as separate translate/rotate/scale ops (what the corpus
-// asserts), replacing any prior common-API ops.
-void author_transform(const pxr::UsdPrim &p_prim, const Transform3D &p_t) {
-    pxr::UsdGeomXformCommonAPI api(p_prim);
-    const Vector3 o = p_t.origin;
-    const Vector3 s = p_t.basis.get_scale();
-    const Vector3 e = p_t.basis.get_euler();
-    api.SetTranslate(pxr::GfVec3d(o.x, o.y, o.z));
-    api.SetRotate(pxr::GfVec3f((float)(e.x * 180.0 / M_PI), (float)(e.y * 180.0 / M_PI), (float)(e.z * 180.0 / M_PI)));
-    api.SetScale(pxr::GfVec3f(s.x, s.y, s.z));
-}
-
-// Walk the loaded scene; for each node mapped to a prim whose local transform changed, author the
-// new transform onto that prim in the (copied) source stage. Leaves everything else untouched.
-void author_changed_transforms(Node *p_node, pxr::UsdStageRefPtr p_stage) {
-    Node3D *n3d = Object::cast_to<Node3D>(p_node);
-    if (n3d != nullptr) {
-        const Dictionary meta = godot_usd::get_usd_metadata(p_node);
-        const String prim_path = meta.get("usd:prim_path", String());
-        if (!prim_path.is_empty()) {
-            pxr::UsdPrim prim = p_stage->GetPrimAtPath(pxr::SdfPath(prim_path.utf8().get_data()));
-            if (prim && prim.IsA<pxr::UsdGeomXformable>()) {
-                pxr::GfMatrix4d m;
-                bool resets = false;
-                pxr::UsdGeomXformable(prim).GetLocalTransformation(&m, &resets);
-                if (!gf_to_transform(m).is_equal_approx(n3d->get_transform())) {
-                    author_transform(prim, n3d->get_transform());
-                }
-            }
-        }
-    }
-    for (int i = 0; i < p_node->get_child_count(); i++) {
-        author_changed_transforms(p_node->get_child(i), p_stage);
-    }
-}
-
-// Save a scene that was loaded from USD (has usd:source_path) by copying that source layer and
-// authoring only the supported edits into the copy — preserving all authored structure. This first
-// increment handles local transform edits.
+// ---- source-preserving save (4c) ----------------------------------------------------------------
+// Delegates to the transplanted static-aware merge (usd_source_merge): copies the source layer and
+// authors ONLY supported edits (transforms, scalar/color preview-surface inputs, same-topology mesh
+// points, skeleton rest, primary blend-shape weights), warning (exact strings) for the rest.
 Error save_source_preserving(Node *p_root, const String &p_source_path, const String &p_dest_path) {
     String src_abs = p_source_path;
     if (p_source_path.begins_with("res://") || p_source_path.begins_with("user://")) {
@@ -186,17 +127,7 @@ Error save_source_preserving(Node *p_root, const String &p_source_path, const St
     if (p_dest_path.begins_with("res://") || p_dest_path.begins_with("user://")) {
         dst_abs = ProjectSettings::get_singleton()->globalize_path(p_dest_path);
     }
-    if (!copy_file_bytes(src_abs, dst_abs)) {
-        UtilityFunctions::printerr("USD source-aware save: could not copy source ", p_source_path, " -> ", p_dest_path);
-        return ERR_CANT_CREATE;
-    }
-    pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(dst_abs.utf8().get_data());
-    if (!stage) {
-        return ERR_CANT_OPEN;
-    }
-    author_changed_transforms(p_root, stage);
-    stage->GetRootLayer()->Save();
-    return OK;
+    return godot_usd::save_static_imported_data_to_source_copy(p_root, src_abs, dst_abs);
 }
 
 // Effective material for surface p_surface: instance override -> per-surface override -> mesh material.

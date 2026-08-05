@@ -127,6 +127,8 @@ set(SOURCES
     src/usd_scene_loader.h
     src/usd_saver.cpp
     src/usd_saver.h
+    src/usd_source_merge.cpp
+    src/usd_source_merge.h
     # Transplanted from godot-usd (MIT, (c) 2026 Miguel de Icaza) — Phase 2 materials + subsets.
     src/usd_materials.cpp
     src/usd_materials.h

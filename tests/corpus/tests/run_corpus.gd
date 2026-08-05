@@ -54,6 +54,19 @@ const MUST_PASS := {
 	"test_inherited_material_subset_roundtrip.gd": true,
 	"test_sparse_material_subset_roundtrip.gd": true,
 	"test_skeleton_roundtrip_save.gd": true,            # skeleton/skin structure preserved through round-trip
+	# Phase 4c source-aware merge + warnings (transplanted usd_source_merge):
+	"test_source_aware_static_material_save.gd": true,        # scalar/color preview-surface input merge
+	"test_source_aware_static_mesh_points_save.gd": true,     # same-topology point-position merge
+	"test_source_aware_skeleton_transform_channels_save.gd": true,
+	"test_source_aware_skeleton_animation_save.gd": true,
+	"test_source_aware_blend_shape_weight_save.gd": true,     # primary blend-shape weight merge
+	"test_source_aware_static_mesh_unsupported_warning.gd": true,   # exact "topology changed" warning
+	"test_source_aware_static_mesh_index_warning.gd": true,
+	"test_source_aware_static_mesh_primvar_warning.gd": true,
+	"test_source_aware_static_material_rebind_warning.gd": true,
+	"test_source_aware_static_material_subset_rebind_warning.gd": true,
+	"test_source_aware_static_texture_network_warning.gd": true,
+	"test_source_aware_inbetween_blend_shape_warning.gd": true,
 	# NOT promoted (hollow, print-only — pass as soon as load() works, assert nothing):
 	#   test_preview_lighting.gd, test_skeleton_basic.gd  -> promote when lights/skel are real.
 }
