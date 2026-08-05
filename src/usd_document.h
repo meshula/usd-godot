@@ -2,6 +2,7 @@
 #define USD_DOCUMENT_H
 
 #include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -34,8 +35,8 @@ private:
     // Export helpers
     void _convert_node_to_prim(Node *p_node, pxr::UsdStageRefPtr p_stage, const pxr::SdfPath &p_parent_path, Ref<UsdState> p_state);
 
-    // Import helpers
-    Error _import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, const pxr::SdfPath &p_prim_path, Node *p_parent, Ref<UsdState> p_state);
+    // Import now routes through UsdSceneBuilder (see usd_scene_builder.h); the previous
+    // _import_prim_hierarchy converter was removed as part of unifying the import paths.
 };
 
 } // namespace godot

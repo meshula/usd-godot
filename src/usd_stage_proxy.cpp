@@ -1,5 +1,6 @@
 #include "usd_stage_proxy.h"
 #include "usd_prim_proxy.h"
+#include "usd_scene_builder.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -631,9 +632,18 @@ StageRecord* UsdStageProxy::get_stage_record() const {
 // -----------------------------------------------------------------------------
 
 Node *UsdStageProxy::import_to_scene(Node *p_parent) const {
-    // TODO: Implement using UsdDocument's import logic
-    UtilityFunctions::printerr("UsdStageProxy: import_to_scene not yet implemented");
-    return nullptr;
+    if (!p_parent) {
+        UtilityFunctions::printerr("UsdStageProxy::import_to_scene: no parent node provided");
+        return nullptr;
+    }
+    StageRecord *record = get_stage_record();
+    if (!record || !record->get_stage()) {
+        UtilityFunctions::printerr("UsdStageProxy::import_to_scene: no open stage");
+        return nullptr;
+    }
+    Node *owner_root = p_parent->get_owner() ? p_parent->get_owner() : p_parent;
+    UsdSceneBuilder::build_into(record->get_stage(), p_parent, owner_root);
+    return p_parent;
 }
 
 Error UsdStageProxy::export_from_scene(Node *p_root) {

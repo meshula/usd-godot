@@ -2,6 +2,7 @@
 #define USD_EXPORT_SETTINGS_H
 
 #include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 namespace godot {

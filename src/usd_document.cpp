@@ -2,6 +2,7 @@
 #include "usd_state.h"
 #include "usd_mesh_import_helper.h"
 #include "usd_mesh_export_helper.h"
+#include "usd_scene_builder.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -261,132 +262,16 @@ Error UsdDocument::import_from_file(const String &p_path, Node *p_parent, Ref<Us
         
         // Store the stage in the state
         p_state->set_stage(stage);
-        
-        // Get the default prim
-        pxr::UsdPrim default_prim = stage->GetDefaultPrim();
-        if (!default_prim) {
-            // If there's no default prim, use the pseudo-root
-            default_prim = stage->GetPseudoRoot();
-        }
-        
-        // Import the prim hierarchy
-        return _import_prim_hierarchy(stage, default_prim.GetPath(), p_parent, p_state);
+
+        // Build the Godot subtree under p_parent via the unified scene builder. The owner assigned
+        // to generated nodes matches the previous behavior (parent's owner, or the parent itself).
+        Node *owner_root = p_parent->get_owner() ? p_parent->get_owner() : p_parent;
+        UsdSceneBuilder::build_into(stage, p_parent, owner_root);
+        return OK;
     } catch (const std::exception& e) {
         UtilityFunctions::printerr("USD Import: Exception occurred: ", e.what());
         return ERR_CANT_OPEN;
     }
-}
-
-Error UsdDocument::_import_prim_hierarchy(const pxr::UsdStageRefPtr &p_stage, const pxr::SdfPath &p_prim_path, Node *p_parent, Ref<UsdState> p_state) {
-    // This method will recursively import a USD prim hierarchy into a Godot scene
-    
-    // Get the prim
-    pxr::UsdPrim prim = p_stage->GetPrimAtPath(p_prim_path);
-    if (!prim) {
-        UtilityFunctions::printerr("USD Import: Invalid prim path: ", String(p_prim_path.GetString().c_str()));
-        return ERR_INVALID_PARAMETER;
-    }
-    
-    // Skip the pseudo-root
-    if (prim.IsPseudoRoot()) {
-        // Process children
-        for (const pxr::UsdPrim &child : prim.GetChildren()) {
-            Error err = _import_prim_hierarchy(p_stage, child.GetPath(), p_parent, p_state);
-            if (err != OK) {
-                return err;
-            }
-        }
-        return OK;
-    }
-    
-    // Create the appropriate node type for this prim
-    Node3D *node = nullptr;
-    String prim_name = String(prim.GetName().GetString().c_str());
-
-    // Handle specific prim types - create the right node type directly
-    if (prim.IsA<pxr::UsdGeomGprim>()) {
-        // Create a MeshInstance3D directly for geometric primitives
-        MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
-        mesh_instance->set_name(prim_name);
-
-        // Use the mesh import helper to convert the USD prim to a Godot mesh
-        UsdMeshImportHelper mesh_helper;
-        Ref<Mesh> mesh = mesh_helper.import_mesh_from_prim(prim);
-
-        if (mesh.is_valid()) {
-            mesh_instance->set_mesh(mesh);
-        }
-
-        node = mesh_instance;
-    } else if (prim.IsA<pxr::UsdGeomCamera>()) {
-        // Create a Camera3D directly for camera prims
-        Camera3D *camera = memnew(Camera3D);
-        camera->set_name(prim_name);
-
-        // Set camera properties
-        pxr::UsdGeomCamera usd_camera(prim);
-
-        // Get the focal length
-        float focal_length = 50.0f; // Default focal length (in mm)
-        usd_camera.GetFocalLengthAttr().Get(&focal_length);
-
-        // Get the horizontal aperture
-        float horizontal_aperture = 24.0f; // Default horizontal aperture (in mm)
-        usd_camera.GetHorizontalApertureAttr().Get(&horizontal_aperture);
-
-        // Convert focal length to FOV (approximation)
-        float fov = 2.0f * atan(horizontal_aperture / (2.0f * focal_length)) * (180.0f / M_PI);
-
-        // Set the FOV
-        camera->set_fov(fov);
-
-        node = camera;
-    } else {
-        // Default: create a Node3D for other prim types (Xform, etc.)
-        node = memnew(Node3D);
-        node->set_name(prim_name);
-    }
-
-    // Add the node to the parent and set ownership
-    p_parent->add_child(node);
-    node->set_owner(p_parent->get_owner() ? p_parent->get_owner() : p_parent);
-
-    // Set the transform if the prim is transformable
-    if (prim.IsA<pxr::UsdGeomXformable>()) {
-        pxr::UsdGeomXformable xformable(prim);
-
-        // Get the local transform matrix
-        pxr::GfMatrix4d matrix;
-        bool reset_xform_stack;
-        xformable.GetLocalTransformation(&matrix, &reset_xform_stack);
-
-        // Convert USD matrix to Godot transform
-        Transform3D transform;
-
-        // Extract basis (rotation and scale)
-        Basis basis;
-        basis.set_column(0, Vector3(matrix[0][0], matrix[0][1], matrix[0][2]));
-        basis.set_column(1, Vector3(matrix[1][0], matrix[1][1], matrix[1][2]));
-        basis.set_column(2, Vector3(matrix[2][0], matrix[2][1], matrix[2][2]));
-
-        // Extract translation
-        Vector3 origin(matrix[3][0], matrix[3][1], matrix[3][2]);
-
-        // Set the transform
-        transform.set_basis(basis);
-        transform.set_origin(origin);
-        node->set_transform(transform);
-    }
-
-    // Process children
-    for (const pxr::UsdPrim &child : prim.GetChildren()) {
-        Error err = _import_prim_hierarchy(p_stage, child.GetPath(), node, p_state);
-        if (err != OK) {
-            return err;
-        }
-    }
-
-    return OK;
 }
 
 } // namespace godot

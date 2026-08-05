@@ -3,6 +3,7 @@
 #include "usd_export_settings.h"
 #include "usd_mesh_export_helper.h"
 #include "usd_mesh_import_helper.h"
+#include "usd_scene_builder.h"
 #include "usd_state.h"
 #include "mcp_control_panel.h"
 #include "mcp_server.h"
@@ -696,103 +697,10 @@ bool USDPlugin::_apply_transform_from_usd_prim(const UsdPrim &p_prim, Node3D *p_
 
 // Helper method to convert a USD prim to a Godot node
 Node *USDPlugin::_convert_prim_to_node(const UsdPrim &p_prim, Node *p_parent, Node *p_scene_root) {
-    // Skip the pseudo-root
-    if (p_prim.IsPseudoRoot()) {
-        // Process children
-        for (UsdPrim child : p_prim.GetChildren()) {
-            _convert_prim_to_node(child, p_parent, p_scene_root ? p_scene_root : p_parent);
-        }
-        return p_parent;
-    }
-    
-    // Get the prim type and name
-    String prim_type = String(p_prim.GetTypeName().GetText());
-    String prim_name = String(p_prim.GetName().GetText());
-    
-    bool prim_is_mesh = !!pxr::UsdGeomGprim(p_prim);
-
-    // Debug output
-    //UtilityFunctions::print("USD Import: Converting prim: ", prim_name, " with type: ", prim_type);
-    
-    // Create a node based on the prim type
-    Node *node = nullptr;
-    
-    if (prim_type == "Xform") {
-        // Create a Node3D for Xform prims
-        Node3D *xform = memnew(Node3D);
-        xform->set_name(prim_name);
-        
-        // Apply transform from USD prim
-        _apply_transform_from_usd_prim(p_prim, xform);
-        
-        node = xform;
-    } else if (prim_type == "Scope") {
-        // Create a Node3D for Scope prims (organizational)
-        Node3D *scope = memnew(Node3D);
-        scope->set_name(prim_name);
-        
-        // Apply transform from USD prim
-        _apply_transform_from_usd_prim(p_prim, scope);
-        
-        //UtilityFunctions::print("USD Import: Created Scope node: ", prim_name);
-        node = scope;
-    } else if (prim_type == "Material" || prim_type == "Shader") {
-        // Skip materials and shaders for now
-        // In a full implementation, we would create materials and shaders
-        // UtilityFunctions::print("USD Import: Skipping Material/Shader: ", prim_name);
-    } else if (prim_is_mesh) {
-        // Create a MeshInstance3D with a BoxMesh for Cube prims
-        MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
-        mesh_instance->set_name(prim_name);
-        
-        UsdMeshImportHelper helper;
-        Ref<Mesh> box_mesh = helper.import_mesh_from_prim(p_prim);
-        if (box_mesh.is_valid()) {
-            mesh_instance->set_mesh(box_mesh);
-            auto mat = helper.create_material(p_prim);
-                        
-            // Apply the material to the mesh
-            if (mat.is_valid()) {
-                mesh_instance->set_surface_override_material(0, mat);
-            }
-
-            // Apply transform from USD prim
-            _apply_transform_from_usd_prim(p_prim, mesh_instance);
-        }        
-        //UtilityFunctions::print("USD Import: Created ", prim_type, " node: ", prim_name);
-        node = mesh_instance;
-    } else {
-        // For empty or unknown prim types, create a Node3D
-        // This handles cases like "Shapes" and "Materials" which have empty type names
-        Node3D *generic = memnew(Node3D);
-        generic->set_name(prim_name);
-        
-        // Apply transform from USD prim
-        _apply_transform_from_usd_prim(p_prim, generic);
-        
-        //UtilityFunctions::print("USD Import: Created generic node for type: ", prim_type, " prim: ", prim_name);
-        node = generic;
-    }
-    
-    // Add the node to the parent
-    if (node) {
-        p_parent->add_child(node);
-        
-        // Set the owner for proper serialization
-        if (p_scene_root) {
-            node->set_owner(p_scene_root);
-        } else {
-            // If no scene root is provided, use the node itself as the owner
-            node->set_owner(p_parent->get_owner());
-        }
-        
-        // Process children
-        for (UsdPrim child : p_prim.GetChildren()) {
-            _convert_prim_to_node(child, node, p_scene_root);
-        }
-    }
-    
-    return node;
+    // Unified import: delegate to the single UsdSceneBuilder dispatcher. This replaces the previous
+    // type-name-string-based converter (which also lacked IsA<> robustness) with the same
+    // schema-dispatched path used by the resource loader and UsdDocument.
+    return UsdSceneBuilder::build_node(p_prim, p_parent, p_scene_root);
 }
 
 // Helper method to print the prim hierarchy

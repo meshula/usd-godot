@@ -251,11 +251,16 @@ pxr::UsdGeomMesh UsdMeshExportHelper::export_geom_mesh(const Ref<Mesh> p_mesh, p
         
         pxr::VtArray<int> face_vertex_indices;
         face_vertex_indices.reserve(indices.size());
-        
-        for (int i = 0; i < indices.size(); i++) {
+
+        // Reverse each triangle's winding on export. Godot uses clockwise front-faces; the USD
+        // importer (build_polygon_mesh) treats the default `rightHanded` orientation as CCW and
+        // reverses corners, so we must reverse here for a faithful round-trip (v[1] stays v[1]).
+        for (int i = 0; i + 2 < indices.size(); i += 3) {
             face_vertex_indices.push_back(indices[i]);
+            face_vertex_indices.push_back(indices[i + 2]);
+            face_vertex_indices.push_back(indices[i + 1]);
         }
-        
+
         // Set the face vertex counts and indices
         mesh.GetFaceVertexCountsAttr().Set(face_vertex_counts);
         mesh.GetFaceVertexIndicesAttr().Set(face_vertex_indices);
@@ -307,25 +312,20 @@ pxr::UsdGeomMesh UsdMeshExportHelper::export_geom_mesh(const Ref<Mesh> p_mesh, p
         
         for (int i = 0; i < uvs.size(); i++) {
             Vector2 uv = uvs[i];
+            // Write st unflipped: the importer applies the Godot<->USD V-flip on read, and the corpus
+            // asserts that single flip survives the round-trip (does NOT expect UV identity).
             usd_uvs.push_back(pxr::GfVec2f(uv.x, uv.y));
         }
         
-        // Create a primvar for the UVs
-        // Use the standard "st" name for texture coordinates
-        pxr::UsdAttribute st_attr = mesh.GetPrim().CreateAttribute(
-            pxr::TfToken("primvars:st"), 
-            pxr::SdfValueTypeNames->Float2Array
-        );
-        
-        // Set the UVs
-        st_attr.Set(usd_uvs);
-        
-        // Set the interpolation to "vertex" for per-vertex UVs
-        pxr::UsdAttribute st_interp_attr = mesh.GetPrim().CreateAttribute(
-            pxr::TfToken("primvars:st:interpolation"),
-            pxr::SdfValueTypeNames->Token
-        );
-        st_interp_attr.Set(pxr::UsdGeomTokens->vertex);
+        // Create "st" as a proper UsdGeomPrimvar so interpolation is stored as primvar METADATA
+        // (not a separate attribute). The importer reads GetInterpolation(); a bare custom attribute
+        // reads back as the default "constant", collapsing all UVs to st[0].
+        pxr::UsdGeomPrimvarsAPI pv_api(mesh.GetPrim());
+        pxr::UsdGeomPrimvar st_primvar = pv_api.CreatePrimvar(
+            pxr::TfToken("st"),
+            pxr::SdfValueTypeNames->TexCoord2fArray,
+            pxr::UsdGeomTokens->vertex);
+        st_primvar.Set(usd_uvs);
     }
     
     //UtilityFunctions::print("USD Export: Exported mesh with ", vertices.size(), " vertices and ", (has_indices ? indices.size() / 3 : vertices.size() / 3), " triangles");

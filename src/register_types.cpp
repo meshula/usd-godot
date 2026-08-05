@@ -10,10 +10,16 @@
 #include "mcp_control_panel.h"
 #include "usd_stage_group_mapping.h"
 #include "usd_stage_manager_panel.h"
+#include "usd_scene_loader.h"
+#include "usd_saver.h"
+#include "usd_light_proxy.h"
 
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/ref.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 // USD includes for plugin registration
@@ -21,6 +27,11 @@
 #include <pxr/base/plug/plugin.h>
 #include <pxr/base/arch/fileSystem.h>
 #include <pxr/base/arch/symbols.h>
+
+// USD includes for the startup self-test
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/cube.h>
+#include <pxr/usd/sdf/layer.h>
 
 using namespace godot;
 
@@ -30,6 +41,10 @@ static bool s_usd_plugins_registered = false;
 // Global MCP server instances
 static mcp::McpServer* s_mcp_server = nullptr;
 static mcp::McpHttpServer* s_mcp_http_server = nullptr;
+
+// USD asset-pipeline loader + saver (registered with ResourceLoader/ResourceSaver).
+static Ref<UsdResourceFormatLoader> s_usd_resource_loader;
+static Ref<UsdResourceFormatSaver> s_usd_resource_saver;
 
 // Global user notes for real-time LLM communication
 static std::string s_user_notes = "";
@@ -108,6 +123,47 @@ static void register_usd_plugins() {
     s_usd_plugins_registered = true;
 }
 
+// Startup self-test: the absolute prerequisite for everything else.
+//
+// If USD's file-format plugins registered correctly, we can create a stage, define a cube, and
+// write a .usda. If they did NOT register, UsdStage::CreateNew(".usda") fails immediately (Sdf:
+// "unknown file format"). This turns a silent, downstream-only failure into a loud, unambiguous
+// startup signal. Returns true iff USD is functional.
+static bool usd_startup_selftest() {
+    const std::string path = std::string(pxr::ArchGetTmpDir()) + "/usd_godot_selftest.usda";
+    pxr::ArchUnlinkFile(path.c_str()); // ignore result; may not exist
+
+    pxr::UsdStageRefPtr stage = pxr::UsdStage::CreateNew(path);
+    if (!stage) {
+        UtilityFunctions::printerr(
+            "USD SELF-TEST FAILED: UsdStage::CreateNew(\"", String(path.c_str()),
+            "\") returned null. USD file-format plugins are NOT registered (expected Sdf "
+            "'unknown file format'). USD is non-functional; import/export/proxies will all fail.");
+        return false;
+    }
+
+    pxr::UsdGeomCube cube = pxr::UsdGeomCube::Define(stage, pxr::SdfPath("/Cube"));
+    cube.GetSizeAttr().Set(2.0);
+    stage->SetDefaultPrim(cube.GetPrim());
+    const bool saved = stage->GetRootLayer()->Save();
+    stage.Reset(); // close before inspecting the file
+
+    const int64_t len = pxr::ArchGetFileLength(path.c_str());
+    if (!saved || len <= 0) {
+        UtilityFunctions::printerr(
+            "USD SELF-TEST FAILED: could not write ", String(path.c_str()),
+            " (saved=", saved, ", bytes=", String::num_int64(len), ").");
+        pxr::ArchUnlinkFile(path.c_str());
+        return false;
+    }
+
+    UtilityFunctions::print(
+        "USD SELF-TEST OK: created stage, defined /Cube, wrote ", String::num_int64(len),
+        " bytes to ", String(path.c_str()), " — USD file-format plugins are functional.");
+    pxr::ArchUnlinkFile(path.c_str());
+    return true;
+}
+
 // Check if running in MCP mode (look for --mcp or --interactive flag)
 static bool is_mcp_mode() {
     OS* os = OS::get_singleton();
@@ -144,6 +200,9 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         // Register USD plugins before anything else that uses USD
         register_usd_plugins();
 
+        // Absolute prerequisite check: prove USD can actually create a stage and write .usda.
+        usd_startup_selftest();
+
         // Register non-editor classes here
         ClassDB::register_class<UsdDocument>();
         ClassDB::register_class<UsdExportSettings>();
@@ -152,8 +211,18 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
         ClassDB::register_class<UsdPrimProxy>();
         ClassDB::register_class<McpControlPanel>();
         ClassDB::register_class<UsdStageManagerPanel>();
+        ClassDB::register_class<UsdResourceFormatLoader>();
+        ClassDB::register_class<UsdResourceFormatSaver>();
+        ClassDB::register_class<UsdAreaLightProxy>();
 
         UtilityFunctions::print("USD-Godot: Classes registered");
+
+        // Register the USD asset-pipeline loader so load()/ResourceLoader.load() on .usd* paths
+        // returns a baked PackedScene (built via UsdSceneBuilder).
+        s_usd_resource_loader.instantiate();
+        ResourceLoader::get_singleton()->add_resource_format_loader(s_usd_resource_loader);
+        s_usd_resource_saver.instantiate();
+        ResourceSaver::get_singleton()->add_resource_format_saver(s_usd_resource_saver, true);
 
         // Initialize USD Stage Group Mapping singleton
         UsdStageGroupMapping::get_singleton();
@@ -207,6 +276,16 @@ void initialize_godot_usd_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_godot_usd_module(ModuleInitializationLevel p_level) {
     if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+        // Unregister the USD asset-pipeline loader.
+        if (s_usd_resource_loader.is_valid()) {
+            ResourceLoader::get_singleton()->remove_resource_format_loader(s_usd_resource_loader);
+            s_usd_resource_loader.unref();
+        }
+        if (s_usd_resource_saver.is_valid()) {
+            ResourceSaver::get_singleton()->remove_resource_format_saver(s_usd_resource_saver);
+            s_usd_resource_saver.unref();
+        }
+
         // Clear callbacks BEFORE stopping servers to prevent crashes during shutdown
         // (callbacks may reference UI objects that are being destroyed)
         if (s_mcp_http_server) {
