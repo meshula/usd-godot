@@ -7,3 +7,7 @@
 
 # corpusd (host test-runner daemon) channel + logs
 /.corpusd/
+
+# The corpus sample .usdz files are TEST FIXTURES, not build outputs — re-include them despite the
+# repo-root `*.usdz` ignore (parent dirs aren't excluded, so this negation takes effect).
+!/samples/*.usdz
