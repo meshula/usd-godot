@@ -138,6 +138,8 @@ set(SOURCES
     src/usd_stage_utils.h
     src/usd_mesh_builder.cpp
     src/usd_mesh_builder.h
+    src/usd_metadata.cpp
+    src/usd_metadata.h
     # Phase 3 (curves + lights): curves + light-proxy lifted from godot-usd; light dispatch ported.
     src/usd_curves.cpp
     src/usd_curves.h

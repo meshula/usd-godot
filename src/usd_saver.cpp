@@ -127,7 +127,7 @@ Error save_source_preserving(Node *p_root, const String &p_source_path, const St
     if (p_dest_path.begins_with("res://") || p_dest_path.begins_with("user://")) {
         dst_abs = ProjectSettings::get_singleton()->globalize_path(p_dest_path);
     }
-    return godot_usd::save_static_imported_data_to_source_copy(p_root, src_abs, dst_abs);
+    return godot_usd::save_source_preserving_layer(p_root, src_abs, dst_abs);
 }
 
 // Effective material for surface p_surface: instance override -> per-surface override -> mesh material.

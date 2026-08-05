@@ -16,4 +16,8 @@ namespace godot_usd {
 // Godot scene p_root into the copy. Absolute filesystem paths.
 godot::Error save_static_imported_data_to_source_copy(godot::Node *p_root, const godot::String &p_source_absolute_path, const godot::String &p_destination_absolute_path);
 
+// Dispatches between composition-preserving export (override prims reauthoring arcs) and the static
+// source-copy merge, based on whether the scene carries preserved read-only composition boundaries.
+godot::Error save_source_preserving_layer(godot::Node *p_root, const godot::String &p_source_absolute_path, const godot::String &p_destination_absolute_path);
+
 } // namespace godot_usd

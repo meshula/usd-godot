@@ -22,6 +22,7 @@
 #include <godot_cpp/classes/animation_library.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -35,7 +36,16 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/reference.h>
+#include <pxr/usd/sdf/payload.h>
+#include <pxr/usd/sdf/layerOffset.h>
+#include <pxr/usd/usd/references.h>
+#include <pxr/usd/usd/payloads.h>
+#include <pxr/usd/usd/inherits.h>
+#include <pxr/usd/usd/specializes.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
@@ -880,6 +890,451 @@ bool apply_animation_edits_to_stage(Node *p_node, const UsdStageRefPtr &p_stage,
 
 	return applied_any;
 }
+// ---- composition-preserving export (scene_loader:214-264,374-378,403-421,1281-1641) --------
+Dictionary serialize_layer_offset_dict(const SdfLayerOffset &p_layer_offset) {
+	Dictionary description;
+	description["offset"] = p_layer_offset.GetOffset();
+	description["scale"] = p_layer_offset.GetScale();
+	return description;
+}
+
+void deserialize_layer_offset_dict(const Dictionary &p_description, SdfLayerOffset *r_layer_offset) {
+	ERR_FAIL_NULL(r_layer_offset);
+	const double offset = p_description.get("offset", 0.0);
+	const double scale = p_description.get("scale", 1.0);
+	*r_layer_offset = SdfLayerOffset(offset, scale);
+}
+
+bool deserialize_reference_dict(const Dictionary &p_description, SdfReference *r_reference) {
+	ERR_FAIL_NULL_V(r_reference, false);
+	const String asset_path = p_description.get("asset_path", String());
+	const String prim_path = p_description.get("prim_path", String());
+	SdfLayerOffset layer_offset;
+	deserialize_layer_offset_dict(p_description.get("layer_offset", Dictionary()), &layer_offset);
+	*r_reference = SdfReference(asset_path.utf8().get_data(), prim_path.is_empty() ? SdfPath() : SdfPath(prim_path.utf8().get_data()), layer_offset);
+	return true;
+}
+
+bool deserialize_payload_dict(const Dictionary &p_description, SdfPayload *r_payload) {
+	ERR_FAIL_NULL_V(r_payload, false);
+	const String asset_path = p_description.get("asset_path", String());
+	const String prim_path = p_description.get("prim_path", String());
+	SdfLayerOffset layer_offset;
+	deserialize_layer_offset_dict(p_description.get("layer_offset", Dictionary()), &layer_offset);
+	*r_payload = SdfPayload(asset_path.utf8().get_data(), prim_path.is_empty() ? SdfPath() : SdfPath(prim_path.utf8().get_data()), layer_offset);
+	return true;
+}
+
+SdfPathVector deserialize_path_array(const Array &p_paths) {
+	SdfPathVector paths;
+	for (int i = 0; i < p_paths.size(); i++) {
+		if (p_paths[i].get_type() != Variant::STRING) {
+			continue;
+		}
+		const String path = p_paths[i];
+		if (path.is_empty()) {
+			continue;
+		}
+		const SdfPath sdf_path(path.utf8().get_data());
+		if (!sdf_path.IsEmpty()) {
+			paths.push_back(sdf_path);
+		}
+	}
+	return paths;
+}
+
+bool metadata_has_composition_arcs(const Dictionary &p_metadata) {
+	return !((Array)p_metadata.get("usd:references", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:payloads", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:inherits", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:specializes", Array())).is_empty();
+}
+
+bool usd_metadata_has_preserved_composition_boundary(const Dictionary &p_metadata) {
+	return (bool)p_metadata.get("usd:variant_boundary", false) ||
+			!((Array)p_metadata.get("usd:variant_context", Array())).is_empty() ||
+			metadata_has_composition_arcs(p_metadata);
+}
+
+bool node_tree_has_usd_composition_boundaries(Node *p_node) {
+	ERR_FAIL_NULL_V(p_node, false);
+	// (No UsdStageInstance in this build — variant instances aren't ported yet; baked scenes only.)
+
+	const Dictionary metadata = get_usd_metadata(p_node);
+	if (usd_metadata_has_preserved_composition_boundary(metadata)) {
+		return true;
+	}
+
+	for (int i = 0; i < p_node->get_child_count(false); i++) {
+		if (node_tree_has_usd_composition_boundaries(p_node->get_child(i, false))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void reapply_composition_arcs(const UsdPrim &p_prim, const Object *p_source_object) {
+	ERR_FAIL_NULL(p_source_object);
+	if (!p_prim) {
+		return;
+	}
+
+	const Dictionary metadata = get_usd_metadata(p_source_object);
+
+	const Array references = metadata.get("usd:references", Array());
+	if (!references.is_empty()) {
+		SdfReferenceVector reference_items;
+		for (int i = 0; i < references.size(); i++) {
+			if (references[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			SdfReference reference;
+			if (deserialize_reference_dict(references[i], &reference)) {
+				reference_items.push_back(reference);
+			}
+		}
+		if (!reference_items.empty()) {
+			UsdReferences usd_references = p_prim.GetReferences();
+			if (usd_references) {
+				usd_references.SetReferences(reference_items);
+			}
+		}
+	}
+
+	const Array payloads = metadata.get("usd:payloads", Array());
+	if (!payloads.is_empty()) {
+		SdfPayloadVector payload_items;
+		for (int i = 0; i < payloads.size(); i++) {
+			if (payloads[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			SdfPayload payload;
+			if (deserialize_payload_dict(payloads[i], &payload)) {
+				payload_items.push_back(payload);
+			}
+		}
+		if (!payload_items.empty()) {
+			UsdPayloads usd_payloads = p_prim.GetPayloads();
+			if (usd_payloads) {
+				usd_payloads.SetPayloads(payload_items);
+			}
+		}
+	}
+
+	const Array inherits = metadata.get("usd:inherits", Array());
+	if (!inherits.is_empty()) {
+		const SdfPathVector inherit_items = deserialize_path_array(inherits);
+		if (!inherit_items.empty()) {
+			UsdInherits usd_inherits = p_prim.GetInherits();
+			if (usd_inherits) {
+				usd_inherits.SetInherits(inherit_items);
+			}
+		}
+	}
+
+	const Array specializes = metadata.get("usd:specializes", Array());
+	if (!specializes.is_empty()) {
+		const SdfPathVector specialize_items = deserialize_path_array(specializes);
+		if (!specialize_items.empty()) {
+			UsdSpecializes usd_specializes = p_prim.GetSpecializes();
+			if (usd_specializes) {
+				usd_specializes.SetSpecializes(specialize_items);
+			}
+		}
+	}
+}
+
+void apply_source_prim_transform(const UsdPrim &p_source_prim, UsdPrim p_target_prim) {
+	if (!p_source_prim || !p_target_prim) {
+		return;
+	}
+
+	UsdGeomXformable source_xformable(p_source_prim);
+	UsdGeomXformable target_xformable(p_target_prim);
+	if (!source_xformable || !target_xformable) {
+		return;
+	}
+
+	GfMatrix4d local_matrix(1.0);
+	bool resets_xform_stack = false;
+	if (!source_xformable.GetLocalTransformation(&local_matrix, &resets_xform_stack, UsdTimeCode::Default())) {
+		return;
+	}
+
+	target_xformable.ClearXformOpOrder();
+	target_xformable.AddTransformOp(UsdGeomXformOp::PrecisionDouble).Set(local_matrix);
+}
+
+bool transforms_equal_approx(const Transform3D &p_left, const Transform3D &p_right) {
+	if (!p_left.origin.is_equal_approx(p_right.origin)) {
+		return false;
+	}
+	for (int i = 0; i < 3; i++) {
+		if (!p_left.basis.get_column(i).is_equal_approx(p_right.basis.get_column(i))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool generated_node_state_matches(Node *p_current, Node *p_expected, String *r_reason) {
+	ERR_FAIL_NULL_V(p_current, false);
+	ERR_FAIL_NULL_V(p_expected, false);
+
+	if (p_current->get_name() != p_expected->get_name()) {
+		if (r_reason != nullptr) {
+			*r_reason = vformat("name changed from '%s' to '%s'", p_expected->get_name(), p_current->get_name());
+		}
+		return false;
+	}
+
+	if (String(p_current->get_class()) != String(p_expected->get_class())) {
+		if (r_reason != nullptr) {
+			*r_reason = vformat("node type changed from '%s' to '%s'", p_expected->get_class(), p_current->get_class());
+		}
+		return false;
+	}
+
+	Node3D *current_3d = Object::cast_to<Node3D>(p_current);
+	Node3D *expected_3d = Object::cast_to<Node3D>(p_expected);
+	if ((current_3d == nullptr) != (expected_3d == nullptr)) {
+		if (r_reason != nullptr) {
+			*r_reason = "Node3D mapping changed";
+		}
+		return false;
+	}
+	if (current_3d != nullptr && expected_3d != nullptr) {
+		if (!transforms_equal_approx(current_3d->get_transform(), expected_3d->get_transform())) {
+			if (r_reason != nullptr) {
+				*r_reason = "transform changed";
+			}
+			return false;
+		}
+		if (current_3d->is_visible() != expected_3d->is_visible()) {
+			if (r_reason != nullptr) {
+				*r_reason = "visibility changed";
+			}
+			return false;
+		}
+	}
+
+	MeshInstance3D *current_mesh = Object::cast_to<MeshInstance3D>(p_current);
+	MeshInstance3D *expected_mesh = Object::cast_to<MeshInstance3D>(p_expected);
+	if ((current_mesh == nullptr) != (expected_mesh == nullptr)) {
+		if (r_reason != nullptr) {
+			*r_reason = "mesh node mapping changed";
+		}
+		return false;
+	}
+	if (current_mesh != nullptr && expected_mesh != nullptr) {
+		const Ref<Mesh> current_mesh_resource = current_mesh->get_mesh();
+		const Ref<Mesh> expected_mesh_resource = expected_mesh->get_mesh();
+		const int current_surface_count = current_mesh_resource.is_valid() ? current_mesh_resource->get_surface_count() : 0;
+		const int expected_surface_count = expected_mesh_resource.is_valid() ? expected_mesh_resource->get_surface_count() : 0;
+		if (current_surface_count != expected_surface_count) {
+			if (r_reason != nullptr) {
+				*r_reason = "mesh surface count changed";
+			}
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void collect_generated_composition_boundary_nodes(Node *p_node, bool p_under_composition_boundary, std::unordered_map<std::string, Node *> *r_nodes, PackedStringArray *r_unmapped_nodes, int p_unmapped_limit = 12) {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_nodes);
+
+	const Dictionary metadata = get_usd_metadata(p_node);
+	if ((bool)metadata.get("usd:generated_preview", false)) {
+		return;
+	}
+
+	const bool under_composition_boundary = p_under_composition_boundary || usd_metadata_has_preserved_composition_boundary(metadata);
+	const String prim_path = metadata.get("usd:prim_path", String());
+
+	if (under_composition_boundary) {
+		if (!prim_path.is_empty()) {
+			(*r_nodes)[std::string(prim_path.utf8().get_data())] = p_node;
+		} else if (r_unmapped_nodes != nullptr && r_unmapped_nodes->size() < p_unmapped_limit) {
+			r_unmapped_nodes->push_back(String(p_node->get_path()));
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count(false); i++) {
+		collect_generated_composition_boundary_nodes(p_node->get_child(i, false), under_composition_boundary, r_nodes, r_unmapped_nodes, p_unmapped_limit);
+	}
+}
+
+
+bool export_composition_preserving_node(Node *p_node, const UsdStageRefPtr &p_stage, const UsdStageRefPtr &p_source_stage) {
+	ERR_FAIL_NULL_V(p_node, false);
+	ERR_FAIL_COND_V(p_stage == nullptr, false);
+
+	if (p_node->has_meta(StringName("usd")) && (bool)get_usd_metadata(p_node).get("usd:generated_preview", false)) {
+		return true;
+	}
+
+	const Dictionary metadata = get_usd_metadata(p_node);
+	const String prim_path_string = metadata.get("usd:prim_path", String());
+	if (prim_path_string.is_empty()) {
+		for (int i = 0; i < p_node->get_child_count(false); i++) {
+			if (!export_composition_preserving_node(p_node->get_child(i, false), p_stage, p_source_stage)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	const SdfPath prim_path(prim_path_string.utf8().get_data());
+	if (prim_path.IsEmpty()) {
+		return false;
+	}
+
+	const bool has_references = !((Array)metadata.get("usd:references", Array())).is_empty();
+	const bool has_payloads = !((Array)metadata.get("usd:payloads", Array())).is_empty();
+	const bool has_inherits = !((Array)metadata.get("usd:inherits", Array())).is_empty();
+	const bool has_specializes = !((Array)metadata.get("usd:specializes", Array())).is_empty();
+
+	UsdPrim prim;
+	if (has_references || has_payloads) {
+		prim = p_stage->OverridePrim(prim_path);
+	} else if (Object::cast_to<Node3D>(p_node) != nullptr) {
+		prim = UsdGeomXform::Define(p_stage, prim_path).GetPrim();
+	} else {
+		prim = p_stage->DefinePrim(prim_path);
+	}
+	if (!prim) {
+		return false;
+	}
+
+	const UsdPrim source_prim = p_source_stage != nullptr ? p_source_stage->GetPrimAtPath(prim_path) : UsdPrim();
+	if (source_prim) {
+		apply_source_prim_transform(source_prim, prim);
+	} else if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
+		UsdGeomXformable xformable(prim);
+		apply_node3d_transform(node_3d, xformable);
+	}
+
+	if (has_references || has_payloads || has_inherits || has_specializes) {
+		reapply_composition_arcs(prim, p_node);
+	}
+
+	if (has_references || has_payloads) {
+		return true;
+	}
+
+	for (int i = 0; i < p_node->get_child_count(false); i++) {
+		if (!export_composition_preserving_node(p_node->get_child(i, false), p_stage, p_source_stage)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+Error save_composition_preserving_generated_scene(Node *p_generated_root, const String &p_path, const UsdStageRefPtr &p_source_stage) {
+	ERR_FAIL_NULL_V(p_generated_root, ERR_INVALID_PARAMETER);
+
+	const String absolute_path = get_absolute_path(p_path);
+	const String base_dir = absolute_path.get_base_dir();
+	if (!base_dir.is_empty()) {
+		const Error mkdir_error = DirAccess::make_dir_recursive_absolute(base_dir);
+		if (mkdir_error != OK) {
+			return mkdir_error;
+		}
+	}
+
+	UsdStageRefPtr stage = UsdStage::CreateNew(absolute_path.utf8().get_data());
+	if (!stage) {
+		return ERR_CANT_CREATE;
+	}
+
+	UsdGeomSetStageUpAxis(stage, UsdGeomTokens->y);
+	UsdGeomSetStageMetersPerUnit(stage, 1.0);
+
+	for (int i = 0; i < p_generated_root->get_child_count(false); i++) {
+		if (!export_composition_preserving_node(p_generated_root->get_child(i, false), stage, p_source_stage)) {
+			return ERR_CANT_CREATE;
+		}
+	}
+
+	if (p_generated_root->get_child_count(false) > 0) {
+		Node *first_child = p_generated_root->get_child(0, false);
+		const Dictionary first_metadata = get_usd_metadata(first_child);
+		const String default_prim_path = first_metadata.get("usd:prim_path", String());
+		if (!default_prim_path.is_empty()) {
+			UsdPrim default_prim = stage->GetPrimAtPath(SdfPath(default_prim_path.utf8().get_data()));
+			if (default_prim) {
+				stage->SetDefaultPrim(default_prim);
+			}
+		}
+	}
+
+	const bool saved = stage->GetRootLayer()->Save();
+	if (!saved || p_source_stage == nullptr || !p_source_stage->GetRootLayer()) {
+		return saved ? OK : ERR_CANT_CREATE;
+	}
+
+	const String source_stage_path = to_godot_string(p_source_stage->GetRootLayer()->GetRealPath());
+	const String target_base_dir = absolute_path.get_base_dir();
+	const auto copy_relative_asset = [&](const String &p_asset_path) {
+		if (p_asset_path.is_empty() || p_asset_path.is_absolute_path()) {
+			return;
+		}
+		const String source_asset_path = get_absolute_path(source_stage_path.get_base_dir().path_join(p_asset_path));
+		if (!FileAccess::file_exists(source_asset_path)) {
+			return;
+		}
+
+		const String target_asset_path = get_absolute_path(target_base_dir.path_join(p_asset_path));
+		const String target_asset_dir = target_asset_path.get_base_dir();
+		if (!target_asset_dir.is_empty()) {
+			const Error mkdir_error = DirAccess::make_dir_recursive_absolute(target_asset_dir);
+			if (mkdir_error != OK) {
+				return;
+			}
+		}
+
+		Ref<FileAccess> source_file = FileAccess::open(source_asset_path, FileAccess::READ);
+		if (source_file.is_null()) {
+			return;
+		}
+		Ref<FileAccess> target_file = FileAccess::open(target_asset_path, FileAccess::WRITE);
+		if (target_file.is_null()) {
+			return;
+		}
+		target_file->store_buffer(source_file->get_buffer(source_file->get_length()));
+	};
+
+	std::function<void(Node *)> copy_relative_assets_recursive = [&](Node *p_node) {
+		if (p_node == nullptr) {
+			return;
+		}
+		const Dictionary metadata = get_usd_metadata(p_node);
+		const Array references = metadata.get("usd:references", Array());
+		for (int i = 0; i < references.size(); i++) {
+			if (references[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			copy_relative_asset(((Dictionary)references[i]).get("asset_path", String()));
+		}
+		const Array payloads = metadata.get("usd:payloads", Array());
+		for (int i = 0; i < payloads.size(); i++) {
+			if (payloads[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			copy_relative_asset(((Dictionary)payloads[i]).get("asset_path", String()));
+		}
+		for (int i = 0; i < p_node->get_child_count(false); i++) {
+			copy_relative_assets_recursive(p_node->get_child(i, false));
+		}
+	};
+	copy_relative_assets_recursive(p_generated_root);
+
+	return OK;
+}
 } // anonymous namespace
 
 // ---- orchestrator (scene_loader:1247) ------------------------------------------------------
@@ -915,5 +1370,16 @@ Error save_static_imported_data_to_source_copy(Node *p_root, const String &p_sou
 	}
 
 	return root_layer->Save() ? OK : ERR_CANT_CREATE;
+}
+
+// Dispatch: a baked scene with preserved read-only composition boundaries is re-exported as
+// override prims that reauthor the arcs (over "Car" (references=...)); otherwise the source layer
+// is copied and supported static edits merged in.
+Error save_source_preserving_layer(Node *p_root, const String &p_source_absolute_path, const String &p_destination_absolute_path) {
+	if (node_tree_has_usd_composition_boundaries(p_root)) {
+		UsdStageRefPtr source_stage = UsdStage::Open(p_source_absolute_path.utf8().get_data());
+		return save_composition_preserving_generated_scene(p_root, p_destination_absolute_path, source_stage);
+	}
+	return save_static_imported_data_to_source_copy(p_root, p_source_absolute_path, p_destination_absolute_path);
 }
 } // namespace godot_usd

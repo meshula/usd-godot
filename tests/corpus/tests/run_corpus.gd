@@ -67,6 +67,12 @@ const MUST_PASS := {
 	"test_source_aware_static_material_subset_rebind_warning.gd": true,
 	"test_source_aware_static_texture_network_warning.gd": true,
 	"test_source_aware_inbetween_blend_shape_warning.gd": true,
+	# Composition arc capture (transplanted usd_metadata) — read-only preservation round-trips:
+	"test_composition_inherits_roundtrip.gd": true,
+	"test_composition_specializes_roundtrip.gd": true,
+	"test_composition_reference_roundtrip.gd": true,   # over prim + reauthored reference arc
+	"test_composition_payload_roundtrip.gd": true,     # over prim + reauthored payload arc
+	"test_unmapped_roundtrip.gd": true,            # unmapped attrs + relationships preserved
 	# NOT promoted (hollow, print-only — pass as soon as load() works, assert nothing):
 	#   test_preview_lighting.gd, test_skeleton_basic.gd  -> promote when lights/skel are real.
 }

@@ -4,6 +4,7 @@
 #include "usd_lights.h"         // ported: build_light_node
 #include "usd_skel.h"           // transplanted: build_skeleton_node / append_skin_bindings / append_baked_skeleton_animations
 #include "usd_materials.h"      // transplanted: build_material_from_usd_material
+#include "usd_metadata.h"       // transplanted: store_composition_arcs / store_unmapped_properties
 #include "usd_stage_utils.h"    // transplanted: set_usd_metadata (merges into a node's "usd" dict)
 
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -25,7 +26,10 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/points.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdSkel/skeleton.h>
+#include <pxr/usd/usdSkel/animation.h>
+#include <pxr/usd/usdSkel/blendShape.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdShade/material.h>
@@ -182,6 +186,10 @@ Node *UsdSceneBuilder::build_node(const pxr::UsdPrim &p_prim, Node *p_parent, No
 
     _apply_transform(p_prim, node);
     _tag_prim_path(p_prim, node);
+    // Capture unmapped USD properties + composition arcs (references/payloads/inherits/specializes,
+    // and usd:composition_preservation_mode) into node metadata for round-tripping.
+    godot_usd::store_unmapped_properties(p_prim, pxr::UsdTimeCode::Default(), node);
+    godot_usd::store_composition_arcs(p_prim, node);
 
     if (p_parent) {
         p_parent->add_child(node);
@@ -194,6 +202,12 @@ Node *UsdSceneBuilder::build_node(const pxr::UsdPrim &p_prim, Node *p_parent, No
     // it can be handed to PackedScene::pack as the scene root).
     Node *child_root = p_scene_root ? p_scene_root : node;
     for (const pxr::UsdPrim &child : p_prim.GetChildren()) {
+        // Skip prims that are consumed by their parent (subsets) or handled out-of-band
+        // (materials/shaders/skel animation/blend shapes) rather than mapped to their own nodes.
+        if (child.IsA<pxr::UsdGeomSubset>() || child.IsA<pxr::UsdShadeMaterial>() || child.IsA<pxr::UsdShadeShader>() ||
+                child.IsA<pxr::UsdSkelAnimation>() || child.IsA<pxr::UsdSkelBlendShape>()) {
+            continue;
+        }
         build_node(child, node, child_root);
     }
     return node;
