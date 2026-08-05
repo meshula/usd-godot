@@ -1,0 +1,50 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Root"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </Root/Materials/TestMaterial>
+    }
+
+    def Scope "Materials"
+    {
+        def Material "TestMaterial"
+        {
+            token outputs:surface.connect = </Root/Materials/TestMaterial/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </Root/Materials/TestMaterial/AlbedoTexture.outputs:rgb>
+                float inputs:metallic = 0
+                float inputs:roughness = 0.4
+                token outputs:surface
+            }
+
+            def Shader "AlbedoTexture"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @textures/albedo.svg@
+                float2 inputs:st = (0, 0)
+                token outputs:rgb
+            }
+        }
+    }
+}

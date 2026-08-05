@@ -1,0 +1,18 @@
+; Godot project for the fidelity corpus harvested from godot-usd.
+; This is a standalone host project whose sole purpose is to run the ported
+; behavior-level regression scripts (tests/) against the usd-godot GDExtension.
+;
+; The usd-godot library + its `godot-usd.gdextension` manifest are staged into
+; this project by tests/corpus/run_corpus.sh before the harness runs (the binary
+; is a build artifact and is intentionally not committed here).
+
+config_version=5
+
+[application]
+
+config/name="usd-godot fidelity corpus"
+config/features=PackedStringArray("4.3")
+
+[native_extensions]
+
+paths=PackedStringArray("res://godot-usd.gdextension")

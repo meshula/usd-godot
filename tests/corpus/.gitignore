@@ -1,0 +1,9 @@
+# Godot project cache
+.godot/
+
+# Build artifacts staged in by run_corpus.sh (not source)
+/godot-usd.gdextension
+/lib/
+
+# corpusd (host test-runner daemon) channel + logs
+/.corpusd/

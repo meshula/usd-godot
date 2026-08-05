@@ -1,0 +1,11 @@
+#usda 1.0
+
+def Xform "Asset"
+{
+    def Mesh "Geom"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(10, 0, 0), (11, 0, 0), (10, 1, 0)]
+    }
+}

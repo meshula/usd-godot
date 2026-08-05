@@ -1,0 +1,51 @@
+#usda 1.0
+(
+    defaultPrim = "Model"
+    upAxis = "Y"
+)
+
+def Xform "Model" (
+    variants = {
+        string modelingVariant = "red"
+    }
+    prepend variantSets = "modelingVariant"
+)
+{
+    variantSet "modelingVariant" = {
+        "red" {
+            def Cube "RedCube"
+            {
+                double size = 1
+            }
+        }
+        "blue" {
+            def Sphere "BlueSphere"
+            {
+                double radius = 1
+            }
+            def Xform "Nested"
+            (
+                variants = {
+                    string detail = "cube"
+                }
+                prepend variantSets = "detail"
+            )
+            {
+                variantSet "detail" = {
+                    "cube" {
+                        def Cube "NestedCube"
+                        {
+                            double size = 0.5
+                        }
+                    }
+                    "sphere" {
+                        def Sphere "NestedSphere"
+                        {
+                            double radius = 0.5
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

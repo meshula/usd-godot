@@ -1,0 +1,82 @@
+#usda 1.0
+(
+    defaultPrim = "root"
+    startTimeCode = 1
+    endTimeCode = 20
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+def Xform "root"
+{
+    def SkelRoot "Actor"
+    {
+        def Mesh "Body" (
+            prepend apiSchemas = ["SkelBindingAPI"]
+        )
+        {
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 3, 2]
+            point3f[] points = [(-1, -1, 0), (1, -1, 0), (-1, 1, 0), (1, 1, 0)]
+            normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+                interpolation = "faceVarying"
+            )
+            int[] primvars:skel:jointIndices = [0, 0, 0, 0] (
+                interpolation = "vertex"
+                elementSize = 1
+            )
+            float[] primvars:skel:jointWeights = [1, 1, 1, 1] (
+                interpolation = "vertex"
+                elementSize = 1
+            )
+            uniform token[] skel:blendShapes = ["Smile"]
+            rel skel:blendShapeTargets = </root/Actor/Body/Smile>
+            rel skel:skeleton = </root/Actor/Skel>
+            uniform token subdivisionScheme = "none"
+
+            def BlendShape "Smile"
+            {
+                uniform vector3f[] offsets = [(0.15, 0, 0.2), (0, 0, 0), (0, 0, 0), (-0.15, 0, 0.2)]
+                uniform int[] pointIndices = [0, 1, 2, 3]
+            }
+        }
+
+        def Skeleton "Skel"
+        {
+            uniform token[] joints = ["joint1"]
+            uniform matrix4d[] bindTransforms = [((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
+            uniform matrix4d[] restTransforms = [((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
+            rel skel:animationSource = [<Rotate>, <Combo>]
+
+            def SkelAnimation "Rotate"
+            {
+                uniform token[] joints = ["joint1"]
+                quatf[] rotations.timeSamples = {
+                    1: [(1,0,0,0)],
+                    20: [(0.9239, 0, 0.3827, 0)]
+                }
+                half3[] scales = [(1,1,1)]
+                float3[] translations = [(0,0,0)]
+            }
+
+            def SkelAnimation "Combo"
+            {
+                uniform token[] joints = ["joint1"]
+                uniform token[] blendShapes = ["Smile"]
+                quatf[] rotations.timeSamples = {
+                    1: [(1,0,0,0)],
+                    10: [(0.9808, 0.1951, 0, 0)],
+                    20: [(1,0,0,0)]
+                }
+                float[] blendShapeWeights = [0.0]
+                float[] blendShapeWeights.timeSamples = {
+                    1: [0.0],
+                    10: [1.0],
+                    20: [0.25],
+                }
+                half3[] scales = [(1,1,1)]
+                float3[] translations = [(0,0,0)]
+            }
+        }
+    }
+}

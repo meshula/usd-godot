@@ -1,0 +1,65 @@
+#usda 1.0
+(
+    defaultPrim = "PreviewSurfaceUVTransform"
+)
+
+def Xform "PreviewSurfaceUVTransform"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </PreviewSurfaceUVTransform/Materials/TestMaterial>
+    }
+
+    def Scope "Materials"
+    {
+        def Material "TestMaterial"
+        {
+            token outputs:surface.connect = </PreviewSurfaceUVTransform/Materials/TestMaterial/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </PreviewSurfaceUVTransform/Materials/TestMaterial/AlbedoTex.outputs:rgb>
+                float inputs:roughness = 0.45
+                token outputs:surface
+            }
+
+            def Shader "StReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+
+            def Shader "UVTransform"
+            {
+                uniform token info:id = "UsdTransform2d"
+                float2 inputs:in.connect = </PreviewSurfaceUVTransform/Materials/TestMaterial/StReader.outputs:result>
+                float2 inputs:scale = (2, 3)
+                float2 inputs:translation = (0.25, 0.1)
+                float inputs:rotation = 0
+                float2 outputs:result
+            }
+
+            def Shader "AlbedoTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @package_src/textures/albedo.svg@
+                float2 inputs:st.connect = </PreviewSurfaceUVTransform/Materials/TestMaterial/UVTransform.outputs:result>
+                float3 outputs:rgb
+            }
+        }
+    }
+}

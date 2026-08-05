@@ -1,0 +1,82 @@
+#usda 1.0
+(
+    defaultPrim = "PreviewSurfaceExtended"
+)
+
+def Xform "PreviewSurfaceExtended"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </PreviewSurfaceExtended/Materials/TestMaterial>
+    }
+
+    def Scope "Materials"
+    {
+        def Material "TestMaterial"
+        {
+            token outputs:surface.connect = </PreviewSurfaceExtended/Materials/TestMaterial/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </PreviewSurfaceExtended/Materials/TestMaterial/AlbedoTex.outputs:rgb>
+                bool inputs:useSpecularWorkflow = 1
+                color3f inputs:specularColor = (0.04, 0.04, 0.04)
+                float inputs:ior = 1.5
+                float inputs:roughness = 0.45
+                float inputs:opacity.connect = </PreviewSurfaceExtended/Materials/TestMaterial/MaskTex.outputs:a>
+                float inputs:clearcoat = 0.6
+                float inputs:clearcoatRoughness = 0.2
+                float inputs:clearcoat.connect = </PreviewSurfaceExtended/Materials/TestMaterial/ClearcoatTex.outputs:r>
+                float inputs:clearcoatRoughness.connect = </PreviewSurfaceExtended/Materials/TestMaterial/ClearcoatTex.outputs:g>
+                float inputs:occlusion.connect = </PreviewSurfaceExtended/Materials/TestMaterial/MaskTex.outputs:b>
+                token outputs:surface
+            }
+
+            def Shader "StReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+
+            def Shader "AlbedoTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @../images/icon.png@
+                float2 inputs:st.connect = </PreviewSurfaceExtended/Materials/TestMaterial/StReader.outputs:result>
+                float3 outputs:rgb
+            }
+
+            def Shader "MaskTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @../images/icon.png@
+                float2 inputs:st.connect = </PreviewSurfaceExtended/Materials/TestMaterial/StReader.outputs:result>
+                float outputs:a
+                float outputs:b
+            }
+
+            def Shader "ClearcoatTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @../images/icon.png@
+                float2 inputs:st.connect = </PreviewSurfaceExtended/Materials/TestMaterial/StReader.outputs:result>
+                float outputs:r
+                float outputs:g
+            }
+        }
+    }
+}

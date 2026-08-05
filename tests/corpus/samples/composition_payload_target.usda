@@ -1,0 +1,11 @@
+#usda 1.0
+
+def Xform "PayloadAsset"
+{
+    def Mesh "PayloadGeom"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(20, 0, 0), (21, 0, 0), (20, 1, 0)]
+    }
+}
